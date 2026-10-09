@@ -32,11 +32,14 @@ public static class CheckpointPolicy {
 	}
 
 	public static CheckpointSpawnDecision Decide(CheckpointSpawnReason reason, bool enabled,
-		CheckpointProgress? host, CheckpointProgress? own) {
+		CheckpointProgress? host, CheckpointProgress? own, bool nativeContinuation = false) {
 		if (reason == CheckpointSpawnReason.LiveReconnect) return CheckpointSpawnDecision.KeepOwnRun;
-		if (!enabled || !IsValid(host) || !host!.reached || !IsValid(own)
+		if (!enabled || !IsValid(host) || (!host!.reached && !nativeContinuation) || !IsValid(own)
 			|| !string.Equals(host.route, own!.route, StringComparison.Ordinal)) return CheckpointSpawnDecision.Normal;
 		if (reason == CheckpointSpawnReason.LateJoin) return CheckpointSpawnDecision.HostWithOwnItems;
+		// A native Continue point may help late joiners resume a legacy save, but
+		// must never masquerade as a later reached checkpoint for the death rule.
+		if (nativeContinuation) return CheckpointSpawnDecision.Normal;
 		if (reason == CheckpointSpawnReason.DeathRespawn && IsLater(host, own)) return CheckpointSpawnDecision.HostEmpty;
 		return CheckpointSpawnDecision.Normal;
 	}
@@ -67,6 +70,16 @@ public sealed class CheckpointSessionState {
 		if (LobbyId == 0 || PendingDeath) return;
 		PendingDeath = true;
 		DeathCheckpoint = (LocalCheckpoint ?? fallback).Copy();
+	}
+
+	public void RestoreProgress(CheckpointProgress? checkpoint, CheckpointProgress? deathCheckpoint, bool pendingDeath) {
+		if (LobbyId == 0) throw new InvalidOperationException("Bind the run before restoring checkpoint progress.");
+		if ((checkpoint != null && !CheckpointPolicy.IsValid(checkpoint))
+			|| (pendingDeath && !CheckpointPolicy.IsValid(deathCheckpoint)))
+			throw new ArgumentException("Invalid saved checkpoint progress.");
+		LocalCheckpoint = checkpoint?.Copy();
+		PendingDeath = pendingDeath;
+		DeathCheckpoint = pendingDeath ? deathCheckpoint!.Copy() : null;
 	}
 
 	public void CompleteRespawn(CheckpointProgress? checkpoint = null) {

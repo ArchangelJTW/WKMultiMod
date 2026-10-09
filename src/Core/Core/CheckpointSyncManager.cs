@@ -23,6 +23,7 @@ namespace WKMPMod.Core;
 [Serializable]
 public sealed class HostCheckpointSnapshot {
 	public int version = 1;
+	public bool nativeContinuation;
 	public ulong lobbyId;
 	public int seed;
 	public string modeSignature = string.Empty;
@@ -49,6 +50,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 	public bool SkipJoinCommands { get; private set; }
 	private readonly CheckpointSessionState _session = new();
 	private HostCheckpointSnapshot? _hostCheckpoint;
+	private HostCheckpointSnapshot? _hostContinuation;
 	private CheckpointRequestScope? _request;
 	private HostCheckpointSnapshot? _reply;
 	private CheckpointSpawnDecision _decision;
@@ -113,15 +115,13 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		if (!_session.Matches(lobby, data.seed.Value, signature)) {
 			_session.Bind(lobby, data.seed.Value, signature);
 			_hostCheckpoint = null;
+			_hostContinuation = null;
 			_requestTimes.Clear();
 		}
 		return true;
 	}
 
-	private static string Signature(MPGameModeManager.GameModeData data) {
-		using var sha = SHA256.Create();
-		return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(data)))).Replace("-", "");
-	}
+	private static string Signature(MPGameModeManager.GameModeData data) => NativeRunPersistence.Signature(data);
 
 	private static string Route(WorldLoader.BranchInfo branch) {
 		var parts = new List<string>();
@@ -183,9 +183,136 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		}
 	}
 
+	/// <summary>Capture only the native load event's saved respawn pose, never the host's later walking position.</summary>
+	public static HostCheckpointSnapshot? CaptureNativeContinuation(CL_SaveManager.SaveState save) {
+		if (!MPCore.IsWorldReady() || save.playerData == null || save.levelData?.Count is not > 0) return null;
+		var info = WorldLoader.GetCurrentLevelFromBounds();
+		var level = info?.GetLevel();
+		var savedLevel = save.levelData[0];
+		if (info?.branch == null || level == null || LevelId(info).level != savedLevel.levelName) return null;
+		var ids = info.branch.GetLevelIds();
+		int index = ids.IndexOf(LevelId(info));
+		if (index < 0) return null;
+		var mode = MPGameModeManager.CaptureCurrentModeData(setCurrent: false);
+		var snapshot = new HostCheckpointSnapshot {
+			nativeContinuation = true, seed = WorldLoader.instance.seed, modeSignature = Signature(mode),
+			progress = new CheckpointProgress {
+				route = Route(info.branch), levelOrdinal = LevelId(info).id,
+				travelDistance = Math.Max(0, save.playerTravelDistance), reached = false
+			},
+			levelName = savedLevel.levelName, regionName = savedLevel.regionName,
+			subregionName = savedLevel.subregionName, levelSeed = savedLevel.seed,
+			generation = ids.Skip(index).Take(256).Select(id => new WorldLoader.BranchInfo.LevelId {
+				id = id.id, level = id.level, region = id.region, subRegion = id.subRegion
+			}).ToList(),
+			activeStates = savedLevel.activeStates?.ToList() ?? new(),
+			levelPosition = level.transform.position, levelRotation = level.transform.rotation,
+			relativePosition = savedLevel.playerRespawnPositionRelativeToLevel,
+			playerRotation = save.playerData.playerRotation, cameraRotation = save.playerData.playerCameraRotation
+		};
+		Validate(snapshot);
+		return snapshot;
+	}
+
+	public void AttachNativeContinuation(HostCheckpointSnapshot? native) {
+		if (native == null || !Ready() || !BindCurrentSession() || native.seed != _session.Seed
+			|| native.modeSignature != _session.ModeSignature) return;
+		_hostContinuation = JsonUtility.FromJson<HostCheckpointSnapshot>(JsonUtility.ToJson(native));
+		_hostContinuation.lobbyId = _session.LobbyId;
+	}
+
+	public static SavedLevelAnchor? CaptureSaveAnchor() {
+		var info = WorldLoader.GetCurrentLevelFromBounds();
+		var level = info?.GetLevel();
+		if (info?.branch == null || level == null) return null;
+		var position = level.transform.position;
+		var rotation = level.transform.rotation;
+		return new SavedLevelAnchor {
+			route = Route(info.branch), levelName = LevelId(info).level, levelOrdinal = LevelId(info).id,
+			position = new[] { position.x, position.y, position.z },
+			rotation = new[] { rotation.x, rotation.y, rotation.z, rotation.w }
+		};
+	}
+
+	private static WorldLoader.LevelInfo? FindLoadedSaveAnchor(SavedLevelAnchor? saved) {
+		if (!SavedRunPolicy.IsValidAnchor(saved) || WorldLoader.instance == null) return null;
+		return WorldLoader.instance.branchTracker.SelectMany(branch => branch.levelTracker)
+			.FirstOrDefault(info => info.GetLevel() != null && LevelId(info).id == saved!.levelOrdinal
+				&& LevelId(info).level == saved.levelName);
+	}
+
+	public static SavedLevelAnchor? RefreshSaveAnchor(SavedLevelAnchor? saved) {
+		var info = FindLoadedSaveAnchor(saved);
+		var level = info?.GetLevel();
+		if (level == null) return null;
+		var position = level.transform.position;
+		var rotation = level.transform.rotation;
+		return new SavedLevelAnchor {
+			route = Route(info!.branch), levelName = saved!.levelName, levelOrdinal = saved.levelOrdinal,
+			position = new[] { position.x, position.y, position.z },
+			rotation = new[] { rotation.x, rotation.y, rotation.z, rotation.w }
+		};
+	}
+
+	/// <summary>Serialize checkpoint geometry relative to the native save's level, never a world-space spawn guess.</summary>
+	public void ExportSavedRun(RunSaveData save, SavedLevelAnchor? anchor) {
+		if (_session.Seed != save.seed || _session.ModeSignature != save.modeSignature || !SavedRunPolicy.IsValidAnchor(anchor)) return;
+		save.checkpoint = _session.LocalCheckpoint?.Copy();
+		save.deathCheckpoint = _session.DeathCheckpoint?.Copy();
+		save.pendingDeath = _session.PendingDeath;
+		save.worldAnchor = anchor;
+		save.checkpointGeometry = string.Empty;
+		if (!save.wasHost || _hostCheckpoint == null || _hostCheckpoint.progress.route != anchor!.route) return;
+		// Clone before converting coordinate frames so the live network snapshot is unchanged.
+		var snapshot = JsonUtility.FromJson<HostCheckpointSnapshot>(JsonUtility.ToJson(_hostCheckpoint));
+		var position = new Vector3(anchor.position[0], anchor.position[1], anchor.position[2]);
+		var rotation = new Quaternion(anchor.rotation[0], anchor.rotation[1], anchor.rotation[2], anchor.rotation[3]);
+		snapshot.levelPosition = Quaternion.Inverse(rotation) * (snapshot.levelPosition - position);
+		snapshot.levelRotation = Quaternion.Inverse(rotation) * snapshot.levelRotation;
+		Validate(snapshot);
+		save.checkpointGeometry = Convert.ToBase64String(CheckpointSnapshotCodec.Encode(JsonUtility.ToJson(snapshot)));
+	}
+
+	public void RestoreSavedRun(RunSaveData save) {
+		if (!Ready() || !BindCurrentSession() || _session.Seed != save.seed || _session.ModeSignature != save.modeSignature) return;
+		try {
+			var anchorInfo = FindLoadedSaveAnchor(save.worldAnchor);
+			string? route = anchorInfo?.branch != null ? Route(anchorInfo.branch) : null;
+			CheckpointProgress? Remap(CheckpointProgress? progress) {
+				var result = progress?.Copy();
+				if (result != null && route != null && result.route == save.worldAnchor?.route) result.route = route;
+				return result;
+			}
+			_session.RestoreProgress(Remap(save.checkpoint), Remap(save.deathCheckpoint), save.pendingDeath);
+			if (MPSteamworks.IsHost && _session.PendingDeath) _session.CompleteRespawn();
+			if (!MPSteamworks.IsHost || !save.wasHost || anchorInfo?.GetLevel() == null || string.IsNullOrEmpty(save.checkpointGeometry)) return;
+			var snapshot = JsonUtility.FromJson<HostCheckpointSnapshot>(
+				CheckpointSnapshotCodec.Decode(Convert.FromBase64String(save.checkpointGeometry)));
+			Validate(snapshot);
+			if (snapshot.seed != _session.Seed || snapshot.modeSignature != _session.ModeSignature
+				|| snapshot.progress.route != save.worldAnchor!.route) return;
+			// Native Continue can rebase the world. Align to a matching generation ID,
+			// not the first prefab with the same room name and not the current player pose.
+			var level = anchorInfo.GetLevel();
+			snapshot.levelPosition = level.transform.TransformPoint(snapshot.levelPosition);
+			snapshot.levelRotation = level.transform.rotation * snapshot.levelRotation;
+			snapshot.progress.route = route!;
+			snapshot.lobbyId = _session.LobbyId;
+			Validate(snapshot);
+			_hostCheckpoint = snapshot;
+			MPMain.LogInfo($"[MP Save] Restored host checkpoint geometry: {snapshot.levelName} (level {snapshot.progress.levelOrdinal}).");
+		} catch (Exception ex) {
+			MPMain.LogWarning($"[MP Save] Could not restore checkpoint metadata; native player/save is unchanged: {ex}");
+		}
+	}
+
 	public void OffsetHostCheckpoint(float offset) {
-		if (_hostCheckpoint != null && MPSteamworks.IsHost && _hostCheckpoint.lobbyId == MPSteamworks.Instance.LobbyId)
+		NativeRunPersistence.OffsetContinuation(offset);
+		if (!MPSteamworks.IsHost) return;
+		if (_hostCheckpoint != null && _hostCheckpoint.lobbyId == MPSteamworks.Instance.LobbyId)
 			_hostCheckpoint.levelPosition += Vector3.up * offset;
+		if (_hostContinuation != null && _hostContinuation.lobbyId == MPSteamworks.Instance.LobbyId)
+			_hostContinuation.levelPosition += Vector3.up * offset;
 	}
 
 	public void RecordDeath() {
@@ -193,6 +320,9 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		if (_session.Seed != WorldLoader.instance.seed) return;
 		try {
 			_session.RecordDeath(PositionProgress(false));
+			// Die is patched before the native player becomes dead. Persist the
+			// tombstone into the existing session flags before native quit/death saving.
+			NativeRunPersistence.RefreshBeforeSave();
 			MPCore.Instance.InvalidateReconnectAfterDeath();
 		} catch (Exception ex) { MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message)); }
 	}
@@ -249,7 +379,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 				if (reason == CheckpointSpawnReason.DeathRespawn) _session.CompleteRespawn();
 				yield break;
 			}
-			if (_reply == null || CheckpointPolicy.Decide(reason, true, _reply.progress, own) != _decision) yield break;
+			if (_reply == null || CheckpointPolicy.Decide(reason, true, _reply.progress, own, _reply.nativeContinuation) != _decision) yield break;
 			bool empty = _decision == CheckpointSpawnDecision.HostEmpty;
 			bool applied = false;
 			yield return GuardedApply(_reply, empty, attempt, value => applied = value);
@@ -283,10 +413,11 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			if (ownJson.Length > 2048 || reason is not (CheckpointSpawnReason.LateJoin or CheckpointSpawnReason.DeathRespawn)) return;
 			var own = JsonConvert.DeserializeObject<CheckpointProgress>(ownJson);
 			bool enabled = reason == CheckpointSpawnReason.LateJoin ? MPConfig.JoinAtHostCheckpoint : MPConfig.RespawnAtHostCheckpoint;
-			var decision = CheckpointPolicy.Decide(reason, enabled, _hostCheckpoint?.progress, own);
+			var target = _hostCheckpoint ?? (reason == CheckpointSpawnReason.LateJoin ? _hostContinuation : null);
+			var decision = CheckpointPolicy.Decide(reason, enabled, target?.progress, own, target?.nativeContinuation ?? false);
 			byte[]? snapshot = null;
 			if (decision is CheckpointSpawnDecision.HostEmpty or CheckpointSpawnDecision.HostWithOwnItems) {
-				try { snapshot = CheckpointSnapshotCodec.Encode(JsonUtility.ToJson(_hostCheckpoint)); }
+				try { snapshot = CheckpointSnapshotCodec.Encode(JsonUtility.ToJson(target)); }
 				catch (Exception ex) { MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message)); decision = CheckpointSpawnDecision.Normal; }
 			}
 			var writer = GetWriter(MPSteamworks.UserSteamId, sender, PacketType.CheckpointSpawn);
@@ -315,7 +446,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 
 	private static void Validate(HostCheckpointSnapshot snapshot) {
 		if (snapshot == null || snapshot.version != 1 || !CheckpointPolicy.IsValid(snapshot.progress)
-			|| !snapshot.progress.reached || string.IsNullOrWhiteSpace(snapshot.levelName) || snapshot.levelName.Length > 256
+			|| (snapshot.nativeContinuation ? snapshot.progress.reached : !snapshot.progress.reached) || string.IsNullOrWhiteSpace(snapshot.levelName) || snapshot.levelName.Length > 256
 			|| string.IsNullOrWhiteSpace(snapshot.regionName) || snapshot.regionName.Length > 256
 			|| snapshot.subregionName == null || snapshot.subregionName.Length > 256
 			|| snapshot.modeSignature == null || snapshot.modeSignature.Length != 64

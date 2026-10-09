@@ -2,6 +2,20 @@
 
 **[中文](README_CN.md)** | **English**
 
+## Fork preview — 1.8.3.4
+
+This fork's `dev` branch includes lobby-entry/metadata fixes, live reconnect,
+host-checkpoint joining and next-day native-save continuation. It is a **test
+build**, not a verified multiplayer release. Both players should use the same
+build and back up saves.
+
+- [Continue Multiplayer / saved runs](docs/saved-runs.md)
+- [Reconnect, checkpoints, build and testing](docs/reconnect-and-checkpoints.md)
+- Package after a Release build: `python3 scripts/package-preview.py`
+- Console `host <name> friends 8` now hosts the loaded run without restarting it.
+
+The original upstream overview and installation instructions follow.
+
 ## Overview
 
 This is a Unity MOD for the game  *White Knuckle* , implementing basic networked player mapping (currently only maps grabbable player capsules).

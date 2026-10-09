@@ -118,6 +118,20 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 	/// <summary>
 	/// 玩家转移队伍 刷新场景物品记录
 	/// </summary>
+	public List<SavedItemTombstones> ExportSavedTombstones() {
+		var teams = _teamTombstones.ToDictionary(pair => pair.Key, pair => new HashSet<ulong>(pair.Value));
+		if (!teams.TryGetValue(MPCore.CurrentTeam, out var current)) teams[MPCore.CurrentTeam] = current = new();
+		current.UnionWith(_sceneTombstones);
+		return teams.Select(pair => new SavedItemTombstones { team = pair.Key, ids = pair.Value.ToList() }).ToList();
+	}
+
+	public void RestoreSavedTombstones(IEnumerable<SavedItemTombstones> saved) {
+		_teamTombstones.Clear();
+		foreach (var team in saved) _teamTombstones[team.team] = new HashSet<ulong>(team.ids);
+		_sceneTombstones = _teamTombstones.TryGetValue(MPCore.CurrentTeam, out var current)
+			? new HashSet<ulong>(current) : new();
+	}
+
 	public void ChangeTeam() {
 		_sceneTombstones.Clear();
 		if (!MPSteamworks.IsHost) SendSceneRemoveChunkRequest();

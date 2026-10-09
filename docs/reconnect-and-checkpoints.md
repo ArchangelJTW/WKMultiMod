@@ -1,4 +1,4 @@
-# Reconnect and host-checkpoint preview — 1.8.3.3
+# Reconnect, checkpoint and native-save preview — 1.8.3.4
 
 Based on upstream `dev` commit `af7e782555f96ec72e4775df623299079c46d786`.
 Uses the unchanged working 1.8.3 resources in `resources/1.8.3/`.
@@ -6,6 +6,10 @@ Uses the unchanged working 1.8.3 resources in `resources/1.8.3/`.
 **Implemented and build-tested; not yet validated in the game with two players.**
 Both computers should install the preview. Never load it alongside another copy
 of the multiplayer DLLs. The installed game files are not modified by building.
+
+**Next-day multiplayer continuation:** see [saved-runs.md](saved-runs.md) for
+Continue Multiplayer, hosting a loaded save without restarting, returning guests'
+own native saves, legacy saves and the save/quit/relaunch checklist.
 
 ## Gameplay rules
 
@@ -15,11 +19,14 @@ of the multiplayer DLLs. The installed game files are not modified by building.
 | First-time/late join | Host's latest reached checkpoint, if available on the same route | Keep your own starting items; never copy host equipment |
 | Death, with host checkpoint further along the same route | Advance to that host checkpoint | Empty hands, backpack, normal/extra pouches and pockets, including artifacts |
 | Death, host checkpoint equal/earlier/unrelated or unavailable | Normal respawn | Normal game rules; no restoration of pre-death inventory |
-| Different lobby, world seed or mode | Normal initialization | No old reconnect state |
+| Matching persisted multiplayer run after quitting; new lobby ID | Native Continue, then host checkpoint placement | Your own native saved items; native death rules still apply |
+| Resumed legacy host without a persisted real checkpoint | Native saved continuation point for late joins only | Your own starting items; never copy host equipment |
+| Unrelated run, world seed or mode | Normal initialization | No old reconnect or guest-save state |
 
 The death rule also applies to dying, leaving and rejoining. A death tombstone
 is kept across failed joins, scene reloads and returning to the menu within this
-game process, but it cannot transfer to a different lobby/seed/mode. A failed
+game process. Native saves can persist it for the same owned multiplayer run,
+but it cannot transfer to an unrelated run/player/seed/mode. A failed
 checkpoint request retains that tombstone and retries rather than being
 misclassified as an alive reconnect. Join/restart auto-commands are skipped for
 post-death spawns to avoid silently granting items again.
@@ -92,10 +99,11 @@ members. If Steam removed membership, use `reconnect` after connectivity returns
 
 ## Limits
 
-This is **not a persistent autosave**. Quitting the process invalidates recovery
-and death tracking. A live reconnect requires a still-loaded matching world.
-Physics is not paused by network loss: it does not undo a fall/death while
-unplugged. Unsupported/incompatible routes, absent checkpoints and disabled
+A live reconnect requires a still-loaded matching world. Process exit discards
+unsaved live state; next-day continuation instead uses the game's native save
+and the matching persistent run identity described in [saved-runs.md](saved-runs.md).
+This is not crash recovery or a rollback service. Physics is not paused by network
+loss: it does not undo a fall/death while unplugged. Unsupported/incompatible routes, absent checkpoints and disabled
 rules use the normal spawn rather than guessing a world coordinate. Root
 alignment and real Steam recovery still require in-game testing.
 
@@ -112,10 +120,10 @@ On this workstation only .NET 10 is installed, so run the net8 tests with:
 DOTNET_ROLL_FORWARD=Major dotnet test tests/Progress.Tests/Progress.Tests.csproj -c Release
 ```
 
-The 65 tests cover entry callback/result ordering, resume tickets,
-native-handle close matching, spawn policy,
-death/rejoin bookkeeping, response correlation/authentication and bounded
-snapshot compression. They do not execute Unity or simulate Steam transport.
+The 98 tests cover entry callback/result ordering, live resume tickets,
+native-handle close matching, persistent run/player/seed/mode matching, bounded
+save metadata, saved death/continuation policy, spawn policy, death/rejoin
+bookkeeping, response correlation/authentication and bounded snapshot compression. They do not execute Unity or simulate Steam transport.
 Builds contain existing nullable/analyzer warnings, but no errors.
 
 To package the built DLLs with the verified upstream bundle, icons, localization
@@ -125,7 +133,7 @@ and testing instructions (Python 3; no third-party dependencies):
 python3 scripts/package-preview.py
 ```
 
-Output: `bin/Release/WKMultiMod-1.8.3.3-preview.zip` and a SHA-256 checksum file.
+Output: `bin/Release/WKMultiMod-1.8.3.4-preview.zip` and a SHA-256 checksum file.
 Both players should extract the ZIP's `MP` folder into `BepInEx/plugins/`,
 replacing the existing `MP` files while the game is closed. Keep backups outside
 `BepInEx/plugins/` so the old DLLs are not loaded alongside the preview.
@@ -153,4 +161,5 @@ Use backups and a disposable run on both computers:
 8. Check no duplicate pitons/items/enemy replicas after world regeneration or
    reconnect, and verify world pickup/death history is refreshed.
 9. Verify ordinary restart, disk/perk revives, Playground, host migration and
-   disabled settings. Check BepInEx logs for `[MP Checkpoint]` and `[MP Reconnect]`.
+   disabled settings. Check logs for `[MP Checkpoint]`, `[MP Reconnect]` and `[MP Save]`.
+10. Follow the full save/quit/relaunch checklist in [saved-runs.md](saved-runs.md).

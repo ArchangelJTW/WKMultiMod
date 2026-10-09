@@ -26,6 +26,7 @@ public static partial class MPKeys {
 	public const string LOBBY_VISIBILITY = "visibility";		// 大厅可见性
 	public const string LOBBY_NAME = "name";					// 大厅名称
 
+	public const string RUN_ID = "saved run id";
 	public const string CHECKPOINT_PROTOCOL = "checkpoint protocol";
 	public const string JOIN_AT_CHECKPOINT = "join at host checkpoint";
 	public const string RESPAWN_AT_CHECKPOINT = "respawn at host checkpoint";

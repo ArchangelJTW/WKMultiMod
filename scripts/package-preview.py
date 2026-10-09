@@ -28,6 +28,7 @@ def main():
         "MP/grub.png": RESOURCES / "grub.png",
         "MP/hang.png": RESOURCES / "hang.png",
         "TESTING.md": ROOT / "docs/reconnect-and-checkpoints.md",
+        "saved-runs.md": ROOT / "docs/saved-runs.md",
     }
     missing = [str(path.relative_to(ROOT)) for path in files.values() if not path.is_file()]
     if missing:
@@ -40,7 +41,7 @@ def main():
     commit = subprocess.check_output(
         ["git", "describe", "--always", "--dirty", "--abbrev=12"], cwd=ROOT, text=True
     ).strip()
-    payload["README.txt"] = f"""WKMultiMod {version} - reconnect/checkpoint preview
+    payload["README.txt"] = f"""WKMultiMod {version} - networking/checkpoint/native-save preview
 Source commit: {commit}
 Source: https://github.com/ArchangelJTW/WKMultiMod/tree/dev
 
@@ -57,7 +58,19 @@ INSTALL (requires the working BepInEx installation you already use):
 4. Do not install a second copy of the multiplayer DLLs elsewhere in plugins.
 5. Start the game. Look for mod version {version} in BepInEx/LogOutput.log.
 
+NEXT-DAY CONTINUATION:
+Host: use Continue Multiplayer on the ordinary saved game-mode screen.
+Fallback: use ordinary Continue, wait for the world to load, then run
+host MyRun friends 8. Hosting no longer restarts the loaded run.
+Guests: join the NEW lobby ID. A matching save made with this build loads
+YOUR OWN native saved inventory; the host's equipment is never copied.
+Old saves can be hosted, but old guest inventories are not auto-guessed
+by seed. Both players must save/exit normally on their own computers.
+See saved-runs.md for upgrade behavior, limitations and the full checklist.
+
 WHAT TO TEST:
+- allplayer: real local position and a synced remote model/pose; no endless
+  empty member-data/missing-player loop. Unknown poses say not synced yet.
 - Late join: host reaches a checkpoint, then walks past it. Join at the
   checkpoint (not the host's current position), keeping your own items.
 - Live reconnect: keep your own position and inventory after network recovery.
@@ -65,7 +78,7 @@ WHAT TO TEST:
   same route, spawn there with empty hands/bag/pouches/pockets/artifacts.
 - Equal/earlier/different-route host checkpoint: use normal respawn instead.
 
-See TESTING.md for limitations, host settings and the full checklist.
+See TESTING.md and saved-runs.md for limitations, settings and checklists.
 If something fails, collect BOTH players' BepInEx/LogOutput.log files
 before restarting the game (the log may be overwritten on launch).
 

@@ -10,11 +10,14 @@
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
     <PackageReference Include="NUnit" Version="3.14.0" />
     <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <!-- Link the production policy without loading Unity or deploying the mod. -->
     <Compile Include="../../src/Core/Core/LobbyResumeState.cs" Link="LobbyResumeState.cs" />
     <Compile Include="../../src/Core/NetWork/PeerConnectionLifetime.cs" Link="PeerConnectionLifetime.cs" />
     <Compile Include="../../src/Core/NetWork/LobbyEntryState.cs" Link="LobbyEntryState.cs" />
     <Compile Include="../../src/Core/Core/CheckpointPolicy.cs" Link="CheckpointPolicy.cs" />
+    <Compile Include="../../src/Core/Core/RunSaveData.cs" Link="RunSaveData.cs" />
+    <Compile Include="../../src/Core/NetWork/RunSaveCodec.cs" Link="RunSaveCodec.cs" />
     <Compile Include="../../src/Core/NetWork/CheckpointRequestScope.cs" Link="CheckpointRequestScope.cs" />
     <Compile Include="../../src/Core/NetWork/CheckpointSnapshotCodec.cs" Link="CheckpointSnapshotCodec.cs" />
   </ItemGroup>

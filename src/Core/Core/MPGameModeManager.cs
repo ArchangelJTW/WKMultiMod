@@ -78,8 +78,8 @@ public class MPGameModeManager {
 	/// <summary>
 	/// 获取当前游戏模式数据
 	/// </summary>
-	public static GameModeData CaptureCurrentModeData() {
-		CurrentData = new GameModeData {
+	public static GameModeData CaptureCurrentModeData(bool setCurrent = true) {
+		var data = new GameModeData {
 			gameModeName = CL_GameManager.gamemode.name,
 			gameModeObjectName = CL_GameManager.gamemode.ToString(),
 			activeTrinkets = StatManager.saveData.GetGameMode(CL_GameManager.GetGamemodeName()).activeTrinkets,
@@ -87,7 +87,8 @@ public class MPGameModeManager {
 			needBindSync = MPConfig.BindSync,
 			seed = WorldLoader.instance != null ? WorldLoader.instance.seed : (int?)null
 		};
-		return CurrentData;
+		if (setCurrent) CurrentData = data;
+		return data;
 	}
 
 	/// <summary>Restore lobby bookkeeping without replacing the live player/world.</summary>
@@ -105,7 +106,7 @@ public class MPGameModeManager {
 	/// <summary>
 	/// 通过GameModeData加载游戏模式, 包括游戏模式, 难度和种子
 	/// </summary>
-	public static void LoadGameMode(GameModeData data) {
+	public static void LoadGameMode(GameModeData data, bool resumeNativeSave = false) {
 		// 字典内没有数据时重初始化字典
 		if (gameModeDict.Count == 0) Initialize();
 		// 保存当前数据
@@ -129,6 +130,8 @@ public class MPGameModeManager {
 		if (data.seed is int value) {
 			WorldLoader.SetPresetSeed(value.ToString());
 		}
+		// Native Continue restores only this computer's matching save/inventory.
+		CL_SaveManager.loadSessionSaveOnLoad = resumeNativeSave;
 		// 设置为已经初始化地图
 		MPCore.SetStatus(MPStatus.INIT_MASK, MPStatus.Initialized);
 		// 手动重载地图

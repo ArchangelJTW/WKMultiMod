@@ -85,6 +85,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	private int _joinOperationVersion;
 	private bool _joinInProgress;
 	private Coroutine? _initGamemodeRoutine;
+	private Coroutine? _hostGamemodeRoutine;
 
 	#region[	管理器实例]
 
@@ -171,6 +172,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	}
 
 	void Update() {
+		NativeRunPersistence.ObserveNativeWorld();
 		if (_LocalPlayer != null) _LocalPlayer.ShouldSendData = CanSync && IsWorldReady();
 		if (!IsInitialized || !IsInLobby) return;
 		if (!_resumeState.HasSession || _resumeState.WorldRevision != _worldRevision)
@@ -355,6 +357,8 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// </summary>
 	private void OnSceneLoaded(Scene scene, LoadSceneMode mode) {
 		_worldRevision++;
+		StopHostInitialization();
+		NativeRunPersistence.SceneChanged(scene.name);
 		ClearResumeState();
 		_LocalPlayer?.CachePlayerReferences();
 		// 重置偏移高度
@@ -365,29 +369,16 @@ public class MPCore : MonoSingleton<MPCore> {
 			case "Game-Main": {
 				// 注册命令和初始化世界数据
 				ChangeRPFactoryId();
-				// 如果是主游戏场景且是房主,抓取当前模式数据并广播给其他人
-				if (MPSteamworks.IsHost) {
-					// 设置当前游戏模式数据
-					var currentModeData = MPGameModeManager.CaptureCurrentModeData();
-					if (string.IsNullOrWhiteSpace(_MPSteamworks.LobbyData?.GetValueOrDefault(MPKeys.GAMEMODE_JSON))) {
-						_MPSteamworks.SetLobbyData(MPKeys.GAMEMODE_JSON, JsonConvert.SerializeObject(currentModeData));
-					}
-					// 以后会在这里广播模式数据,用于房主切换游戏模式
-					SetStatus(MPStatus.INIT_MASK, MPStatus.Initialized);
-				}
+				// sceneLoaded is before native Start/Continue completes. Publish the
+				// actual restored seed/mode only after the final saved world is ready.
+				if (MPSteamworks.IsHost) StartHostInitialization();
 				break;
 			}
 			case "Playground": {
 				// 游乐场场景不需要重载地图,但需要初始化玩家模型ID
 				SetStatus(MPStatus.INIT_MASK, MPStatus.Initialized);
 				ChangeRPFactoryId();
-				if (MPSteamworks.IsHost) {
-					// 设置当前游戏模式数据
-					var currentModeData = MPGameModeManager.CaptureCurrentModeData();
-					if (string.IsNullOrWhiteSpace(_MPSteamworks.LobbyData?.GetValueOrDefault(MPKeys.GAMEMODE_JSON))) {
-						_MPSteamworks.SetLobbyData(MPKeys.GAMEMODE_JSON, JsonConvert.SerializeObject(currentModeData));
-					}
-				}
+				if (MPSteamworks.IsHost) StartHostInitialization();
 				break;
 			}
 			case "Main-Menu":
@@ -413,6 +404,7 @@ public class MPCore : MonoSingleton<MPCore> {
 		_joinOperationVersion++;
 		_joinInProgress = false;
 		_CheckpointSync?.CancelRequest();
+		StopHostInitialization();
 		StopGamemodeInitialization();
 		if (_LocalPlayer != null) _LocalPlayer.ShouldSendData = false;
 		SetStatus(MPStatus.INIT_MASK, MPStatus.NotInitialized);
@@ -440,7 +432,8 @@ public class MPCore : MonoSingleton<MPCore> {
 		var scene = SceneManager.GetActiveScene().name;
 		if (scene != "Game-Main" && scene != "Playground") return false;
 		var player = ENT_Player.GetPlayer();
-		return player != null && !player.IsDead()
+		return player != null && !player.IsDead() && !CL_GameManager.runHasEnded
+			&& !CL_GameManager.IsLoading() && !NativeRunPersistence.NativeContinuePending
 			&& (scene == "Playground" || (WorldLoader.instance != null && WorldLoader.isLoaded));
 	}
 
@@ -996,13 +989,26 @@ public class MPCore : MonoSingleton<MPCore> {
 			return;
 		}
 
-		string lobbyName = args.Length > 1 ? args[0] : "New Lobby";
+		string lobbyName = args[0];
 		string visibility = args.Length >= 2 ? args[1] : "public";
 		int maxPlayers = 8;
 		if (args.Length > 2 && int.TryParse(args[2], out int parsedMax)) {
 			maxPlayers = parsedMax;
 		}
 
+		await CreateLobbyAsync(lobbyName, maxPlayers, visibility);
+	}
+
+	/// <summary>Shared host path for new-game UI, Continue Multiplayer and the console.</summary>
+	public async Task<bool> CreateLobbyAsync(string lobbyName, int maxPlayers = 8, string visibility = "public", Func<bool>? contextIsValid = null) {
+		if (IsInLobby || _joinInProgress) {
+			CommandConsole.LogError(Get("CommandConsole.AlreadyInOnlineMode"));
+			return false;
+		}
+		if (maxPlayers < 2 || maxPlayers > 250 || visibility is not ("public" or "friends" or "private")) {
+			CommandConsole.LogError(Get("CommandConsole.HostUsage"));
+			return false;
+		}
 		MPMain.LogInfo(Get("MPCore.CreatingLobby", lobbyName));
 
 		// 设置状态为正在连接
@@ -1017,7 +1023,11 @@ public class MPCore : MonoSingleton<MPCore> {
 		try {
 			// 直接 await 异步版本
 			bool success = await _MPSteamworks.CreateRoomAsync(maxPlayers, lobbyData);
-			if (operation != _joinOperationVersion) return;
+			if (operation != _joinOperationVersion) return false;
+			if (contextIsValid != null && !contextIsValid()) {
+				ResetStateVariables();
+				return false;
+			}
 
 			if (success) {
 				// 连接成功后的逻辑处理
@@ -1026,38 +1036,24 @@ public class MPCore : MonoSingleton<MPCore> {
 				// 设置大厅可见性
 				SetLobbyVisibility(new string[] { visibility });
 
-				switch (SceneManager.GetActiveScene().name) {
-					// 主游戏需要相同种子的重载地图
-					case "Game-Main": {
-						WorldLoader.ReloadWithSeed(new string[] { WorldLoader.instance.seed.ToString() });
-						break;
-					}
-					case "Playground": {
-						// 设置当前游戏模式数据
-						var currentModeData = MPGameModeManager.CaptureCurrentModeData();
-						if (string.IsNullOrWhiteSpace(_MPSteamworks.LobbyData?.GetValueOrDefault(MPKeys.GAMEMODE_JSON)))
-							_MPSteamworks.SetLobbyData(MPKeys.GAMEMODE_JSON, JsonConvert.SerializeObject(currentModeData));
-						SetStatus(MPStatus.INIT_MASK, MPStatus.Initialized);
-						break;
-					}
-					// 其他模式不需要重载地图
-					default: {
-						break;
-					}
-				}
+				string scene = SceneManager.GetActiveScene().name;
+				if (scene == "Game-Main" || scene == "Playground") StartHostInitialization();
 				string lobby_id = _MPSteamworks.LobbyId.ToString();
 				CopyToClipboard(lobby_id);
 				CommandConsole.Log(Get("CommandConsole.HostSuccess"));
+				return true;
 			} else {
 				// 失败处理
 				SetStatus(MPStatus.LOBBY_MASK, MPStatus.LobbyConnectionError);
 				ResetStateVariables();
 				CommandConsole.LogError(Get("CommandConsole.CreateLobbyFailed"));
+				return false;
 			}
 		} catch (Exception ex) {
-			if (operation != _joinOperationVersion) return;
-			MPMain.LogError(Get("MPCore.CriticalErrorDuringCreate", ex.Message));
+			if (operation != _joinOperationVersion) return false;
+			MPMain.LogError(Get("MPCore.CriticalErrorDuringCreate", ex.ToString()));
 			ResetStateVariables();
+			return false;
 		}
 	}
 
@@ -1886,6 +1882,54 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// <summary>
 	/// 获取游戏模式数据的协程
 	/// </summary>
+	private void StartHostInitialization() {
+		if (_hostGamemodeRoutine == null && _MPSteamworks.IsInLobby && MPSteamworks.IsHost)
+			_hostGamemodeRoutine = StartCoroutine(InitializeLoadedHost());
+	}
+
+	private void StopHostInitialization() {
+		if (_hostGamemodeRoutine != null) {
+			StopCoroutine(_hostGamemodeRoutine);
+			_hostGamemodeRoutine = null;
+		}
+	}
+
+	private IEnumerator InitializeLoadedHost() {
+		int operation = _joinOperationVersion;
+		int revision = _worldRevision;
+		ulong lobbyId = _MPSteamworks.LobbyId;
+		yield return null; // allow native Start/Continue to schedule its saved generation
+		float deadline = Time.unscaledTime + 120f;
+		try {
+			while (!IsWorldReady()) {
+				if (operation != _joinOperationVersion || revision != _worldRevision
+					|| !_MPSteamworks.IsInLobby || _MPSteamworks.LobbyId != lobbyId || !MPSteamworks.IsHost) yield break;
+				if (Time.unscaledTime >= deadline) {
+					MPMain.LogError("[MP Save] Host world did not finish loading. The run was not restarted; leave/retry after resolving the native loading error.");
+					yield break;
+				}
+				yield return null;
+			}
+			if (operation != _joinOperationVersion || revision != _worldRevision || _MPSteamworks.LobbyId != lobbyId) yield break;
+			try {
+				var data = CaptureCurrentModeData();
+				if (WorldLoader.instance != null) WorldLoader.customSeed = true;
+				SetStatus(MPStatus.INIT_MASK, MPStatus.Initialized);
+				ChangeRPFactoryId();
+				joinedMemberData();
+				if (data.seed.HasValue) NativeRunPersistence.BindHost(data);
+				_WorldSyncManager.RebindAfterCheckpointLoad();
+				_LocalPlayer.CachePlayerReferences();
+				_LocalPlayer.RefreshForConnection();
+				// RUN_ID/checkpoint/history are ready before clients see GAMEMODE_JSON.
+				_MPSteamworks.SetLobbyData(MPKeys.GAMEMODE_JSON, JsonConvert.SerializeObject(data));
+			} catch (Exception ex) {
+				MPMain.LogError($"[MP Save] Could not attach the lobby to the loaded run; the native run was not restarted: {ex}");
+				ResetStateVariables();
+			}
+		} finally { _hostGamemodeRoutine = null; }
+	}
+
 	private void StartGamemodeInitialization() {
 		if (_initGamemodeRoutine == null && IsInLobby && !IsInitialized && !MPSteamworks.IsHost)
 			_initGamemodeRoutine = StartCoroutine(InitGamemodeRoutine());
@@ -1903,7 +1947,7 @@ public class MPCore : MonoSingleton<MPCore> {
 		ulong lobbyId = _MPSteamworks.LobbyId;
 		try {
 			if (MPSteamworks.IsHost || IsInitialized || !IsInLobby) yield break;
-			for (int i = 0; i < 3; i++) {
+			for (int i = 0; i < 60; i++) {
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId || IsInitialized) yield break;
 				string rawData = _MPSteamworks._currentLobby.GetData(MPKeys.GAMEMODE_JSON);
 				if (string.IsNullOrEmpty(rawData)) {
@@ -1924,26 +1968,43 @@ public class MPCore : MonoSingleton<MPCore> {
 				}
 
 				bool resumed = TryResumeLoadedWorld(data);
+				string runId = _MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID);
+				bool continuedSave = !resumed && NativeRunPersistence.TryUseLoadedClientSave(data, runId);
 				if (!resumed) {
 					ClearResumeState();
 					_WorldSyncManager.LeaveAll();
 					CurrentTeam = MPKeys.DEFAULT_TEAM;
 					_MPSteamworks.SetMemberData(MPKeys.TEAM, CurrentTeam);
-					LoadGameMode(data);
+					if (!continuedSave) {
+						continuedSave = NativeRunPersistence.HasMatchingClientSave(data, runId);
+						LoadGameMode(data, resumeNativeSave: continuedSave);
+					}
 				}
+				float loadDeadline = Time.unscaledTime + 120f;
 				while (!IsWorldReady()) {
 					if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
+					if (Time.unscaledTime >= loadDeadline) {
+						MPMain.LogError("[MP Save] Client world did not finish loading; no saved inventory was copied or overwritten by the mod.");
+						yield break;
+					}
 					yield return null;
 				}
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
+				if (continuedSave) continuedSave = NativeRunPersistence.RestoreClientProgress(data, runId);
 				if (!resumed && _CheckpointSync != null)
 					yield return _CheckpointSync.ResolveSpawn(CheckpointSpawnReason.LateJoin);
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
 				RememberLoadedSession();
 				_LocalPlayer.CachePlayerReferences();
 				_LocalPlayer.RefreshForConnection();
-				// Join commands can restart/teleport/grant items: don't replay on reconnect.
-				if (!resumed && !(_CheckpointSync?.SkipJoinCommands ?? false)) {
+				_WorldSyncManager.RebindAfterCheckpointLoad();
+				NativeRunPersistence.BindClient(data, runId);
+				SceneItemModule.Instance.SendSceneRemoveChunkRequest();
+				EnemySyncModule.Instance.SendKillChunkRequest();
+				ClimbableSyncModule.Instance.SendChunkRequest();
+				if (continuedSave) MPMain.LogInfo("[MP Save] Continued this player's own matching native save; host equipment was not copied.");
+				// Join commands can restart/teleport/grant items: don't replay on reconnect/Continue.
+				if (!resumed && !continuedSave && !(_CheckpointSync?.SkipJoinCommands ?? false)) {
 					string cmdData = _MPSteamworks._currentLobby.GetData(MPKeys.JOIN_COMMAND);
 					if (!string.IsNullOrEmpty(cmdData)) Patch_CommandConsole.ExecuteCommandForcefully(cmdData);
 				}
