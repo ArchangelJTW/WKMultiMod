@@ -82,6 +82,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	private readonly LobbyResumeState _resumeState = new();
 	private GameModeData? _resumeMode;
 	private int _worldRevision;
+	public int WorldRevision => _worldRevision;
 	private int _joinOperationVersion;
 	private bool _joinInProgress;
 	private Coroutine? _initGamemodeRoutine;
@@ -1883,10 +1884,10 @@ public class MPCore : MonoSingleton<MPCore> {
 		IEnumerator ShowLobbyData() {
 			int operation = _joinOperationVersion;
 			while (operation == _joinOperationVersion && IsInLobby
-				&& _MPSteamworks.LobbyId == lobby.Id.Value && (!IsInitialized || !IsWorldReady()))
+				&& _MPSteamworks.LobbyId == lobby.Id.Value && (!IsReady || !IsWorldReady()))
 				yield return null;
 			yield return new WaitForSecondsRealtime(0.5f);
-			if (operation != _joinOperationVersion || !IsInLobby || !IsWorldReady()
+			if (operation != _joinOperationVersion || !IsReady || !IsWorldReady()
 				|| _MPSteamworks.LobbyId != lobby.Id.Value) yield break;
 
 			var message = GetRandom("0_DisplayMessage.EnteredMessages",
@@ -1988,6 +1989,8 @@ public class MPCore : MonoSingleton<MPCore> {
 				bool resumed = TryResumeLoadedWorld(data);
 				string runId = _MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID);
 				bool continuedSave = !resumed && NativeRunPersistence.TryUseLoadedClientSave(data, runId);
+				int beforeLoadRevision = _worldRevision;
+				bool requestedSceneLoad = false;
 				MPMain.LogInfo($"[MP Join] Run={runId}; liveReconnect={resumed}, loadedNativeSave={continuedSave}.");
 				if (!resumed) {
 					ClearResumeState();
@@ -1996,11 +1999,13 @@ public class MPCore : MonoSingleton<MPCore> {
 					_MPSteamworks.SetMemberData(MPKeys.TEAM, CurrentTeam);
 					if (!continuedSave) {
 						continuedSave = NativeRunPersistence.HasMatchingClientSave(data, runId);
+						requestedSceneLoad = true;
 						LoadGameMode(data, resumeNativeSave: continuedSave);
 					}
 				}
+				var loadBarrier = new WorldLoadBarrier(beforeLoadRevision, requestedSceneLoad);
 				float loadDeadline = Time.unscaledTime + 120f;
-				while (!IsWorldReady()) {
+				while (!loadBarrier.IsReady(_worldRevision, IsWorldReady())) {
 					if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
 					if (Time.unscaledTime >= loadDeadline) {
 						MPMain.LogError("[MP Save] Client world did not finish loading; no saved inventory was copied or overwritten by the mod.");
@@ -2009,6 +2014,7 @@ public class MPCore : MonoSingleton<MPCore> {
 					yield return null;
 				}
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
+				MPMain.LogInfo($"[MP Join] Client world ready at revision {_worldRevision} (before={beforeLoadRevision}, sceneReload={requestedSceneLoad}); starting checkpoint handshake.");
 				if (continuedSave) continuedSave = NativeRunPersistence.RestoreClientProgress(data, runId);
 				var resolution = resumed ? CheckpointResolution.Normal : CheckpointResolution.Failed;
 				if (!resumed && _CheckpointSync != null) {
@@ -2019,7 +2025,7 @@ public class MPCore : MonoSingleton<MPCore> {
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
 				if (_MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID) != runId) resolution = CheckpointResolution.Failed;
 				if (!WorldAdmission.Complete(resolution, runId)) {
-					MPMain.LogError("[MP Checkpoint] Join failed: host checkpoint placement did not complete. Refusing player/world sync in an unrelated starting world. Update both players and rejoin; the host's save is unchanged.");
+					MPMain.LogError("[MP Checkpoint] Join failed: host checkpoint placement did not complete. Refusing player/world sync in an unverified world. See the preceding checkpoint/load diagnostic; the host's save is unchanged.");
 					ResetStateVariables();
 					yield break;
 				}

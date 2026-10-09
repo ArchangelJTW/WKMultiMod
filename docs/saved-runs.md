@@ -1,4 +1,4 @@
-# Next-day multiplayer continuation — preview 1.8.3.6
+# Next-day multiplayer continuation — preview 1.8.3.7
 
 **Implemented/build-tested; still requires a real two-player save/quit/relaunch test.**
 Use save backups and a disposable run first. Both players must use this build.
@@ -57,6 +57,13 @@ rule. Once the host reaches an actual checkpoint, that checkpoint takes priority
 
 ## Implementation and safety
 
+- Checkpoint regeneration now starts native ID allocation at the host's target
+  ordinal. Native saveLoad allocates IDs from a retained counter rather than
+  restoring saveLevels[].id; this caused the observed 1.8.3.6 ID-0/ID-50 mismatch
+  and admission disconnect. The strict target identity check is retained.
+- Fresh joins/restarts wait for the newly requested scene and native world, not
+  the ready globals of the previous scene. Loaded local saves/warm reconnects
+  still keep their own player data and avoid unnecessary reloads.
 - Checkpoint protocol 2 includes the persistent run ID in requests/replies.
   Reusing a Steam lobby and seed after a new/reloaded run cannot reuse another
   run's live reconnect ticket or checkpoint/death state. Both peers must update.

@@ -14,6 +14,7 @@
     <!-- Link the production policy without loading Unity or deploying the mod. -->
     <Compile Include="../../src/Core/Core/LobbyResumeState.cs" Link="LobbyResumeState.cs" />
     <Compile Include="../../src/Core/Core/WorldJoinAdmission.cs" Link="WorldJoinAdmission.cs" />
+    <Compile Include="../../src/Core/Core/WorldLoadBarrier.cs" Link="WorldLoadBarrier.cs" />
     <Compile Include="../../src/Core/NetWork/PeerConnectionLifetime.cs" Link="PeerConnectionLifetime.cs" />
     <Compile Include="../../src/Core/NetWork/LobbyEntryState.cs" Link="LobbyEntryState.cs" />
     <Compile Include="../../src/Core/Core/CheckpointPolicy.cs" Link="CheckpointPolicy.cs" />

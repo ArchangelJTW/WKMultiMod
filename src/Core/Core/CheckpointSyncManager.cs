@@ -65,6 +65,8 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 	private readonly Dictionary<ulong, float> _requestTimes = new();
 	private static readonly AccessTools.FieldRef<WorldLoader.LevelInfo, WorldLoader.BranchInfo.LevelId> LevelId =
 		AccessTools.FieldRefAccess<WorldLoader.LevelInfo, WorldLoader.BranchInfo.LevelId>("levelID");
+	private static readonly AccessTools.FieldRef<WorldLoader, int> GenerationCounter =
+		AccessTools.FieldRefAccess<WorldLoader, int>("idCounter");
 	private static readonly AccessTools.FieldRef<Inventory, List<Inventory.Pouch>> NativePouches =
 		AccessTools.FieldRefAccess<Inventory, List<Inventory.Pouch>>("pouches");
 	private static readonly Action<Inventory> ClearBagAndHands =
@@ -563,7 +565,14 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 				baseEntitySaves = new(), saveInfos = new(), playerRespawnLevel = true,
 				playerRespawnPositionRelativeToLevel = snapshot.relativePosition
 			};
-			WorldLoader.instance.RestartGenerationFromLevelList(new WorldLoader.GenerationParameters {
+			// Native UnloadAllLevels replaces the branch but retains idCounter;
+			// saveLoad allocates fresh IDs instead of using saveLevels[].id. Without
+			// this, host target 0 becomes client target 50 and admission rejects it.
+			var loader = WorldLoader.instance;
+			int counter = CheckpointGenerationIdentity.CounterStart(snapshot.progress.levelOrdinal);
+			MPMain.LogInfo($"[MP Checkpoint] Resetting native generation counter {GenerationCounter(loader)} -> {counter} for the isolated host checkpoint world.");
+			GenerationCounter(loader) = counter;
+			loader.RestartGenerationFromLevelList(new WorldLoader.GenerationParameters {
 				generationType = WorldLoader.GenerationParameters.GenerationType.saveLoad,
 				targetLevel = asset.id, saveLevels = snapshot.generation, levelData = new() { levelSave },
 				preloadLevels = new() { asset }, lastRegion = region, startRegion = region,
@@ -571,16 +580,18 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			});
 			float deadline = Time.unscaledTime + 60f;
 			yield return null;
-			while (!WorldLoader.isLoaded) {
+			while (!WorldLoader.isLoaded || CL_GameManager.IsLoading()) {
 				if (!RequestStillCurrent(attempt, snapshot) || Time.unscaledTime >= deadline) yield break;
 				yield return null;
 			}
 			if (!RequestStillCurrent(attempt, snapshot)) yield break;
-			var currentInfo = WorldLoader.instance.GetCurrentLevel();
+			var currentInfo = loader.GetCurrentLevel();
 			var level = currentInfo?.GetLevel();
-			if (level == null || LevelId(currentInfo!).level != snapshot.levelName
-				|| LevelId(currentInfo!).id != snapshot.progress.levelOrdinal)
-				throw new InvalidOperationException("Regenerated checkpoint level identity does not match the host snapshot.");
+			var actualId = currentInfo != null ? LevelId(currentInfo) : null;
+			if (level == null || actualId == null || !CheckpointGenerationIdentity.MatchesTarget(
+				snapshot.levelName, snapshot.progress.levelOrdinal, actualId.level, actualId.id))
+				throw new InvalidOperationException($"Regenerated checkpoint level mismatch: expected {snapshot.levelName} (id {snapshot.progress.levelOrdinal}), actual {actualId?.level ?? "none"} (id {actualId?.id}).");
+			MPMain.LogInfo($"[MP Checkpoint] Generated target verified: {actualId.level} (id {actualId.id}); completing alignment before multiplayer admission.");
 			var root = GameObject.Find("World_Root(Clone)")?.transform;
 			if (root == null || !level.transform.IsChildOf(root)) throw new InvalidOperationException("Checkpoint world root was not found.");
 			Quaternion deltaRotation = snapshot.levelRotation * Quaternion.Inverse(level.transform.rotation);
@@ -608,7 +619,9 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		} finally {
 			IsApplying = false;
 			if (player != null) player.UnLock();
-			if (MPCore.IsInLobby && WorldLoader.instance != null && WorldLoader.isLoaded) {
+			// Initial joins rebind/request history AFTER Core admits the aligned
+			// world. Never start multiplayer snapshot work from a failed load.
+			if (success && MPCore.IsReady && WorldLoader.instance != null && WorldLoader.isLoaded) {
 				WorldSyncManager.Instance.RebindAfterCheckpointLoad();
 				SceneItemModule.Instance.SendSceneRemoveChunkRequest();
 				EnemySyncModule.Instance.SendKillChunkRequest();

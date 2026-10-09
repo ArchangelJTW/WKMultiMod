@@ -1,12 +1,12 @@
-# Reconnect, checkpoint and native-save preview — 1.8.3.6
+# Reconnect, checkpoint and native-save preview — 1.8.3.7
 
 Based on upstream `dev` commit `af7e782555f96ec72e4775df623299079c46d786`.
 Uses the unchanged working 1.8.3 resources in `resources/1.8.3/`.
 
 **Implemented and build-tested; not yet validated in the game with two players.**
-Both computers must install 1.8.3.6: checkpoint protocol 2 now carries the
-persistent run ID and a decision reason. Mixing it with 1.8.3.5 checkpoint hosts
-is refused rather than silently falling back to normal spawn.
+Both computers should install 1.8.3.7. Checkpoint protocol 2 carries the
+persistent run ID and a decision reason; 1.8.3.5 checkpoint hosts are refused
+rather than silently falling back to normal spawn.
 Never load it alongside another copy
 of the multiplayer DLLs. The installed game files are not modified by building.
 
@@ -52,6 +52,22 @@ lobby. Old hosts without this protocol fall back to normal initialization.
 
 ## Checkpoint implementation
 
+- The 1.8.3.6 client log identified a real post-regeneration failure, not a Steam
+  kick: `Regenerated checkpoint level identity does not match the host snapshot`
+  caused our admission gate to disconnect. The native `GenerateLevels` allocates
+  IDs with `WorldLoader.idCounter++`; `saveLoad` does not restore the supplied
+  numeric IDs and `UnloadAllLevels` does not reset that counter. A host room at
+  ID 0 became guest room ID 50. Checkpoint regeneration now seeds the isolated
+  native counter with the host's target ordinal before loading. Name/ID checks
+  remain strict; diagnostics report expected and actual identities.
+- Fresh in-game retry waits for a NEW scene-loaded revision as well as native
+  world readiness. A still-loaded old world cannot send a checkpoint request
+  before `SceneManager.LoadScene` completes and then have it cancelled by that
+  callback. The death/restart path uses the same barrier; warm reconnect and an
+  explicitly loaded matching local native save do not reload unnecessarily.
+- Failed placement does not rebind entities or request world-history chunks.
+  Initial joins do that only after successful admission; the lobby-entered
+  message also waits for admission instead of just a loaded starting map.
 - Scopes death/checkpoint state, live reconnect tickets, admission and network
   request/reply to the persistent run ID, not only Steam lobby/seed/mode. The
   paired 1.8.3.5 logs showed a new run ID after a host death/reload in the same
@@ -150,7 +166,8 @@ On this workstation only .NET 10 is installed, so run the net8 tests with:
 DOTNET_ROLL_FORWARD=Major dotnet test tests/Progress.Tests/Progress.Tests.csproj -c Release
 ```
 
-The 140 tests cover run-ID changes in the same lobby/seed, stale-run responses
+The 156 tests cover queued scene-load readiness barriers, retained native
+counter/host target identity, run-ID changes in the same lobby/seed, stale-run responses
 and cached worlds, zero-ID/unknown-team deletion history normalization,
 checkpoint decision reasons, JSON/clone/compression field preservation and
 failed/successful world admission, entry callback/result ordering, live resume tickets,
@@ -166,7 +183,7 @@ and testing instructions (Python 3; no third-party dependencies):
 python3 scripts/package-preview.py
 ```
 
-Output: `bin/Release/WKMultiMod-1.8.3.6-preview.zip` and a SHA-256 checksum file.
+Output: `bin/Release/WKMultiMod-1.8.3.7-preview.zip` and a SHA-256 checksum file.
 Both players should extract the ZIP's `MP` folder into `BepInEx/plugins/`,
 replacing the existing `MP` files while the game is closed. Keep backups outside
 `BepInEx/plugins/` so the old DLLs are not loaded alongside the preview.
@@ -209,3 +226,9 @@ Use backups and a disposable run on both computers:
 13. Restart/replace a host run inside the same Steam lobby with the same seed.
     Old-world syncing must stop; reconnect must not reuse the previous run's
     loaded world, branch checkpoint or death tombstone.
+14. Re-test the 1.8.3.6 placement-then-disconnect case. Expect
+    `Resetting native generation counter ... -> ...`, `Generated target verified`,
+    and `checkpoint resolution=Applied`. Both remote models must stay visible
+    and updating. Retry from the game after a failed join: the next checkpoint
+    request must follow `Client world ready` at a new scene revision, not run
+    from the previous level and get cancelled immediately.

@@ -143,6 +143,7 @@ public class MPGameModeManager {
 	/// </summary>
 	public static void RestartGameMode() {
 		bool afterDeath = CheckpointSyncManager.Current?.HasPendingDeath ?? false;
+		int beforeRevision = MPCore.Instance.WorldRevision;
 		if (CurrentData != null) {
 			LoadGameMode(CurrentData);
 			MPCore.Instance.StartCoroutine(ExecuteRestartCMD());
@@ -151,8 +152,18 @@ public class MPGameModeManager {
 		}
 
 		IEnumerator ExecuteRestartCMD() {
-			// 等待地图加载完成 || WorldLoader.instance 为空(游乐场)
-			yield return new WaitUntil(() => WorldLoader.isLoaded || WorldLoader.instance == null);
+			// A ready world from before LoadScene must not execute respawn/restart
+			// commands or send a checkpoint request that sceneLoaded then cancels.
+			var loadBarrier = new WorldLoadBarrier(beforeRevision, requiresSceneLoad: true);
+			float deadline = Time.unscaledTime + 120f;
+			while (!loadBarrier.IsReady(MPCore.Instance.WorldRevision, MPCore.IsWorldReady())) {
+				if (!MPCore.IsInLobby) yield break;
+				if (Time.unscaledTime >= deadline) {
+					MPMain.LogWarning("[MP Checkpoint] Restart scene/world did not finish loading; no checkpoint request was sent from the old world.");
+					yield break;
+				}
+				yield return null;
+			}
 
 			if (afterDeath && CheckpointSyncManager.Current != null) {
 				var checkpoints = CheckpointSyncManager.Current;
