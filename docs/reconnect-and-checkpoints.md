@@ -1,4 +1,4 @@
-# Reconnect and host-checkpoint preview — 1.8.3.2
+# Reconnect and host-checkpoint preview — 1.8.3.3
 
 Based on upstream `dev` commit `af7e782555f96ec72e4775df623299079c46d786`.
 Uses the unchanged working 1.8.3 resources in `resources/1.8.3/`.
@@ -66,6 +66,17 @@ lobby. Old hosts without this protocol fall back to normal initialization.
 
 ## Reconnect fixes included
 
+- Entry initialization runs once whether Steam's callback or async join/create
+  result arrives first. Both success paths explicitly finalize entry, publish
+  member metadata and set the host ID; assigning a lobby handle is not used as
+  a substitute for initialization.
+- Direct member-data replies use a local profile cache instead of waiting for
+  Steam to echo its member-data index. This fixes the empty metadata/missing
+  player-model loop observed in the 1.8.3.2 preview log.
+- `allplayer` shows the real local position and `not synced yet` for a remote
+  player without an accepted pose, rather than reporting misleading zeros.
+- Enemy death chunks are retained while the game is loading and applied after
+  native world/player initialization. Errors include the full stack trace.
 - Safe/idempotent peer cleanup when coroutine bookkeeping is already gone.
 - Tracks and closes pending connections; ignores old-handle close callbacks.
 - Scopes Steam callbacks and late async results to the intended lobby.
@@ -101,7 +112,8 @@ On this workstation only .NET 10 is installed, so run the net8 tests with:
 DOTNET_ROLL_FORWARD=Major dotnet test tests/Progress.Tests/Progress.Tests.csproj -c Release
 ```
 
-The 57 tests cover resume tickets, native-handle close matching, spawn policy,
+The 65 tests cover entry callback/result ordering, resume tickets,
+native-handle close matching, spawn policy,
 death/rejoin bookkeeping, response correlation/authentication and bounded
 snapshot compression. They do not execute Unity or simulate Steam transport.
 Builds contain existing nullable/analyzer warnings, but no errors.
@@ -113,7 +125,7 @@ and testing instructions (Python 3; no third-party dependencies):
 python3 scripts/package-preview.py
 ```
 
-Output: `bin/Release/WKMultiMod-1.8.3.2-preview.zip` and a SHA-256 checksum file.
+Output: `bin/Release/WKMultiMod-1.8.3.3-preview.zip` and a SHA-256 checksum file.
 Both players should extract the ZIP's `MP` folder into `BepInEx/plugins/`,
 replacing the existing `MP` files while the game is closed. Keep backups outside
 `BepInEx/plugins/` so the old DLLs are not loaded alongside the preview.

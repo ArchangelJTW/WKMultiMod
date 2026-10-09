@@ -79,6 +79,7 @@ public class RPContainer {
 
 	// 标记模型是否已经就绪(Initialize 成功)
 	public bool IsModelReady { get; private set; } = false;
+	public bool HasReceivedPose { get; private set; }
 
 	#region[RAII函数]
 
@@ -140,6 +141,7 @@ public class RPContainer {
 		_colliders = null;
 		_modelBehaviour = null;
 		IsModelReady = false;
+		HasReceivedPose = false;
 		_isDead = false;
 	}
 
@@ -330,6 +332,7 @@ public class RPContainer {
 			_remoteLeftHand.UpdateFromHandData(ref playerData.LeftHand, MPSteamworks.UserSteamId);
 			_remoteRightHand.UpdateFromHandData(ref playerData.RightHand, MPSteamworks.UserSteamId);
 		}
+		HasReceivedPose = true;
 	}
 
 	/// <summary>

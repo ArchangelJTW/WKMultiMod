@@ -47,6 +47,8 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 	private int _lobbyOperationVersion;
 	private ulong _requestedLobbyId;
 	private bool _creatingLobby;
+	private readonly LobbyEntryState _entryState = new();
+	private readonly Dictionary<string, string> _localMemberData = new();
 	private const int LOBBY_JOIN_TIMEOUT_MS = 15000;
 
 
@@ -265,6 +267,8 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 		_lobbyOperationVersion++;
 		_requestedLobbyId = 0;
 		_creatingLobby = false;
+		_entryState.Clear();
+		_localMemberData.Clear();
 		var lobby = _currentLobby;
 		_currentLobby = default;
 
@@ -622,6 +626,9 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 
 			MPMain.LogTest("MPSW CreateRoom D");
 
+			// Do not rely on callback/Task completion ordering to publish member data.
+			InitializeEnteredLobby(_currentLobby);
+
 			// 刷新大厅数据
 			RefreshLobbyData();
 
@@ -674,6 +681,8 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 
 			MPMain.LogTest("MPSW JoinRoom D");
 
+			InitializeEnteredLobby(_currentLobby);
+
 			// 刷新大厅数据
 			RefreshLobbyData();
 
@@ -696,12 +705,19 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 	/// LobbyEntered总线订阅者: <see cref="MPCore.HandleLobbyEntered"/><br/>
 	/// </summary>
 	private void HandleLobbyEntered(Lobby lobby) {
-		if (!_creatingLobby && lobby.Id.Value != _requestedLobbyId) {
+		// A create callback has no known target yet. The scoped async success path
+		// initializes it once the actual created lobby ID is available.
+		if (_creatingLobby) return;
+		if (lobby.Id.Value != _requestedLobbyId) {
 			// Steam cannot cancel a lobby request. Discard a late enter callback.
 			if (lobby.Id != _currentLobby.Id) lobby.Leave();
 			return;
 		}
-		if (lobby.Id == _currentLobby.Id) return;
+		InitializeEnteredLobby(lobby);
+	}
+
+	private void InitializeEnteredLobby(Lobby lobby) {
+		if (!_entryState.TryNotify(lobby.Id.Value, _requestedLobbyId)) return;
 		_currentLobby = lobby;
 		HostSteamId = lobby.Owner.Id;
 		MPMain.LogInfo(Localization.Get("MPSteamworks.EnteredLobby", lobby.Id.ToString()));
@@ -1156,6 +1172,7 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 		try {
 			// 设置实际数据
 			_currentLobby.SetMemberData(key, value);
+			_localMemberData[key] = value;
 
 			// 检查并更新索引
 			if (_knownKeysCache.Add(key)) {
@@ -1179,6 +1196,7 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 			if (kvp.Key == MPKeys.ALL_KEYS_INDEX) continue;
 
 			_currentLobby.SetMemberData(kvp.Key, kvp.Value);
+			_localMemberData[kvp.Key] = kvp.Value;
 
 			// 只要有新 Key 成功加入 Cache, 标记变更
 			if (_knownKeysCache.Add(kvp.Key)) indexChanged = true;
@@ -1207,6 +1225,10 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 	public Dictionary<string, string> GetAllMemberData(Friend friend) {
 		var result = new Dictionary<string, string>();
 		if (!_currentLobby.Id.IsValid) return result;
+		// Steam's member-data index can lag behind SetMemberData. A direct peer
+		// request for our own profile must not send an empty/stale Steam echo.
+		if (friend.Id == UserSteamId && _localMemberData.Count > 0)
+			return new Dictionary<string, string>(_localMemberData);
 
 		try {
 			// 先拿到索引字符串

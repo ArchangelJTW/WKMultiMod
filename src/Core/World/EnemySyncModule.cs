@@ -2,6 +2,7 @@ using Steamworks.Data;
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using Unity.VisualScripting;
 using UnityEngine;
 using WKMPMod.Components;
@@ -60,6 +61,7 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 	public void OnLeave() {
 		// 停止残留的异步协程
 		_diedEntities.Clear();
+		_pendingDeaths.Clear();
 		if (WorldSyncManager.Instance != null)
 			foreach (var coroutine in _diedEntityRoutines.Values)
 				if (coroutine != null) WorldSyncManager.Instance.StopCoroutine(coroutine);
@@ -80,6 +82,7 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 	/// 已经死亡或移除的生物,用于同步给新加入的玩家 string储存死亡方式
 	/// </summary>
 	private readonly Dictionary<ulong, string> _diedEntities = new();
+	private readonly HashSet<ulong> _pendingDeaths = new();
 
 	/// <summary>
 	/// 每个客户端对应的快照发送协程. Key=客户端SteamId, Value=协程引用.
@@ -243,7 +246,7 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 					break;
 			}
 		} catch (Exception ex) {
-			MPMain.LogError($"[MP EnemySync] Failed to apply {action}: {ex.Message}");
+			MPMain.LogError($"[MP EnemySync] Failed to apply {action}: {ex}");
 		}
 	}
 
@@ -255,6 +258,11 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 	/// 由 WorldSyncManager 每帧在 LateUpdate 调用
 	/// </summary>
 	public void OnSyncUpdate(float deltaTime) {
+		if (!MPSteamworks.IsHost && _pendingDeaths.Count > 0 && CanApplyDeaths()) {
+			foreach (ulong id in _pendingDeaths.Take(ChunkItemsPerFrame).ToArray()) {
+				if (TryApplyDeath(id, _diedEntities[id])) _pendingDeaths.Remove(id);
+			}
+		}
 		if (!MPSteamworks.IsHost || !MPCore.CanSync || !IsEnabled) {
 			ResetSweepState();
 			return;
@@ -406,16 +414,11 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 			identity.Initialize(BuildStableNetworkId(syncRoot));
 
 
-		// 该生物已经被记录 杀死该生物
-		if (_diedEntities.TryGetValue(identity.networkId, out var diedType)) {
-			if (string.IsNullOrEmpty(diedType)) entity.Kill("diedSync");
-			else entity.Kill(diedType);
-			entity.health = 0f;
-			return identity;
-		}
-
-		// 注册到字典
+		// Register before applying a tombstone. Kill can synchronously disable the
+		// entity, and native Kill routines must not run while a world is loading.
 		RegisterEnemyRecord(identity);
+		if (_diedEntities.TryGetValue(identity.networkId, out var diedType)
+			&& !TryApplyDeath(identity.networkId, diedType)) _pendingDeaths.Add(identity.networkId);
 		return identity;
 	}
 
@@ -618,9 +621,8 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 		string killType = reader.GetString();
 		if (string.IsNullOrEmpty(killType)) killType = "diedSync";
 
-		if (!enemies.TryGetValue(networkId, out var identity) || identity == null) return;
-
-		identity.GetComponent<GameEntity>()?.Kill(killType);
+		_diedEntities[networkId] = killType;
+		if (!TryApplyDeath(networkId, killType)) _pendingDeaths.Add(networkId);
 	}
 
 	/// <summary>
@@ -645,21 +647,29 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 		if (MPSteamworks.IsHost) return;
 
 		int count = reader.GetInt();
-
+		if (count < 0 || count > ChunkItemsPerFrame) throw new InvalidOperationException("Invalid enemy death chunk size.");
 		for (int i = 0; i < count; i++) {
 			ulong networkId = reader.GetULong();
 			string diedType = reader.GetString();
-
 			_diedEntities[networkId] = diedType;
-
-			if (enemies.TryGetValue(networkId, out var identity)
-				&& identity != null
-				&& identity.TryGetComponent<GameEntity>(out var entity)) {
-
-				if (string.IsNullOrEmpty(diedType)) entity.Kill("diedSync");
-				else entity.Kill(diedType);
-			}
+			if (!TryApplyDeath(networkId, diedType)) _pendingDeaths.Add(networkId);
 		}
+	}
+
+	private static bool CanApplyDeaths() => MPCore.IsReady && MPCore.IsWorldReady() && !CL_GameManager.IsLoading();
+
+	private bool TryApplyDeath(ulong networkId, string diedType) {
+		if (!CanApplyDeaths()) return false;
+		// A missing/unloaded entity will pick up the retained tombstone when registered.
+		if (!enemies.TryGetValue(networkId, out var identity) || identity == null) return true;
+		var entity = identity.GetComponent<GameEntity>();
+		if (entity == null || entity.dead) return true;
+		bool previous = ApplyingRemoteState;
+		ApplyingRemoteState = true;
+		try {
+			entity.Kill(string.IsNullOrEmpty(diedType) ? "diedSync" : diedType);
+			return true;
+		} finally { ApplyingRemoteState = previous; }
 	}
 
 	/// <summary>

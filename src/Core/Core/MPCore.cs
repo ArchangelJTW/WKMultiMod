@@ -436,7 +436,7 @@ public class MPCore : MonoSingleton<MPCore> {
 		}
 	}
 
-	private static bool IsWorldReady() {
+	public static bool IsWorldReady() {
 		var scene = SceneManager.GetActiveScene().name;
 		if (scene != "Game-Main" && scene != "Playground") return false;
 		var player = ENT_Player.GetPlayer();
@@ -613,11 +613,20 @@ public class MPCore : MonoSingleton<MPCore> {
 
 		// 获取大厅全部玩家
 		CommandConsole.BuildCommand("allplayer", (args) => {
+			if (!EnsureInLobby()) return;
+			var localPlayer = ENT_Player.GetPlayer();
 			foreach (var friend in _MPSteamworks.Members) {
-				Vector3 position = friend.Id == MPSteamworks.UserSteamId ? Vector3.zero : _RPManager.GetPlayerObject(friend.Id)?.transform.position ?? Vector3.zero;
-				float distance = position == Vector3.zero ? 0 : Vector3.Distance(ENT_Player.GetPlayer().transform.position, position);
-				CommandConsole.Log(Get(
-					"CommandConsole.AllPlayer", friend.Name, friend.Id, distance, position));
+				Vector3? position = null;
+				if (friend.Id == MPSteamworks.UserSteamId) {
+					if (localPlayer != null) position = localPlayer.transform.position;
+				} else if (_RPManager.Players.TryGetValue(friend.Id, out var remote)
+					&& remote.IsModelReady && remote.HasReceivedPose && remote.PlayerObject != null) {
+					position = remote.PlayerObject.transform.position;
+				}
+				object distance = position.HasValue && localPlayer != null
+					? Vector3.Distance(localPlayer.transform.position, position.Value) : Get("CommandConsole.PoseUnavailable");
+				object displayPosition = position.HasValue ? position.Value : Get("CommandConsole.PoseUnavailable");
+				CommandConsole.Log(Get("CommandConsole.AllPlayer", friend.Name, friend.Id, distance, displayPosition));
 			}
 		})
 			.NotCheat().Description(GetSmart("CommandHelp.AllPlayer"))

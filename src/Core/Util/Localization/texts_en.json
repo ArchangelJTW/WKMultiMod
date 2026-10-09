@@ -233,6 +233,7 @@
   },
   "CommandConsole": {
     "AllPlayer": "Name: {0} Id: {1} Distance: {2} Position: {3}",
+    "PoseUnavailable": "not synced yet",
     "AlreadyInOnlineMode": "You are already in online mode, \nplease use the leave command to leave and then go online",
     "AutoCommandInsufficientParams": "Insufficient parameters!",
     "AutoCommandInvalidFormat": "Format error! Format: acmd [join|restart|jointeam_[teamName]] ; [command1] ; [command2]",
