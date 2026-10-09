@@ -4,7 +4,10 @@ using System.Text;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 using WKMPMod.Core;
+using WKMPMod.Components;
+using WKMPMod.Data;
 using WKMPMod.Util;
+using Object = UnityEngine.Object;
 
 namespace WKMPMod.World;
 
@@ -49,8 +52,35 @@ public class WorldSyncManager : MonoSingleton<WorldSyncManager> {
 		foreach (var module in _modules.Values) module.OnResetMap();
 	}
 
+	/// <summary>Pause snapshot/rebuild work but keep identities in the loaded map.</summary>
+	public void SuspendForReconnect() {
+		StopAllCoroutines();
+	}
+
 	public void LeaveAll() {
 		foreach (var module in _modules.Values) module.OnLeave();
+	}
+
+	public void PrepareForCheckpointLoad() {
+		// Remove old dynamic replicas as well as their tables. Geometry regeneration
+		// must not leave orphaned network pitons/items beside the new snapshot.
+		foreach (var climbable in Object.FindObjectsByType<NetworkedClimable>(FindObjectsSortMode.None))
+			Object.Destroy(climbable.gameObject);
+		foreach (var item in Object.FindObjectsByType<NetworkedItem>(FindObjectsSortMode.None))
+			if (item.itemCreateType == ItemType.DroppedItem) Object.Destroy(item.gameObject);
+		LeaveAll();
+	}
+
+	public void RebindAfterCheckpointLoad() {
+		foreach (var entity in Object.FindObjectsByType<GameEntity>(FindObjectsSortMode.None))
+			EnemySyncModule.Instance.OnEntityEnabled(entity);
+		foreach (var item in Object.FindObjectsByType<Item_Object>(FindObjectsSortMode.None))
+			SceneItemModule.Instance.OnSceneItemStarted(item);
+	}
+
+	protected override void OnDestroy() {
+		SceneManager.sceneLoaded -= OnSceneLoaded;
+		base.OnDestroy();
 	}
 
 	public void EndAll() {

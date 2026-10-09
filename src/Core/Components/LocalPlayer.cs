@@ -25,6 +25,7 @@ public class LocalPlayer : MonoSingleton<LocalPlayer> {
 	// 状态缓存
 	public PlayerData LastPlayerData => _lastPlayerData;
 	private PlayerData _lastPlayerData;
+	private bool _forceNextSync;
 	private string[] _handItemPrefabNames = new string[2];
 	private List<IDType> _farPlayersBuffer = new List<IDType>(16);
 	public List<IDType> _nearPlayersBuffer = new List<IDType>(16);  // 近处玩家,大部分数据可以仅对near发送
@@ -117,6 +118,15 @@ public class LocalPlayer : MonoSingleton<LocalPlayer> {
 		}
 	}
 
+	/// <summary>Send a fresh pose/item snapshot immediately after reconnecting.</summary>
+	public void RefreshForConnection() {
+		CachePlayerReferences();
+		if (_teleportCooldownTimer == null || !ValidatePlayerReferences() || _cachedPlayer.IsDead()) return;
+		CheckLocalPlayerUpdates(true);
+		BuildExtraPlayerData();
+		_forceNextSync = true;
+	}
+
 	// 重置状态缓存
 	public void Initialize(IDType userId, string factoryId, Color32 playerColor) {
 		UserId = userId;
@@ -158,8 +168,8 @@ public class LocalPlayer : MonoSingleton<LocalPlayer> {
 	/// </summary>
 	private void TrySendLocalPlayerData() {
 		// 发送给近距离玩家 常规频率定时器 && 位置发生了变化
-		bool tickNormal = _sendDataTimer.TryTick();
-		bool tickMinFreq = _minUpdateFrequencyTimer.TryTick();
+		bool tickNormal = _sendDataTimer.TryTick() || _forceNextSync;
+		bool tickMinFreq = _minUpdateFrequencyTimer.TryTick() || _forceNextSync;
 
 		// 如果没有任何定时器触发, 返回
 		if (!tickNormal && !tickMinFreq) return;
@@ -182,6 +192,7 @@ public class LocalPlayer : MonoSingleton<LocalPlayer> {
 
 		// 如果没有显著变换 && 不强制发送, 返回
 		if (!CheckLocalPlayerUpdates(tickMinFreq)) return;
+		_forceNextSync = false;
 
 		// 获取距离分层列表 (将本地玩家当前位置作为中心点)
 		// 2400m/玩家数量, 最小100m, 远距离玩家仅保证最小频率发送数据

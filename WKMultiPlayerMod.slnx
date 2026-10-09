@@ -1,11 +1,11 @@
 <Solution>
   <Folder Name="/src/">
-    <Project Path="D:/DevelopmentPortfolio/c#/WKMultiPlayerMod/src/Core/WKMultiPlayerMod.csproj" />
-    <Project Path="D:/DevelopmentPortfolio/c#/WKMultiPlayerMod/src/Shared/WKMultiPlayerMod.Shared.csproj" />
+    <Project Path="src/Core/WKMultiPlayerMod.csproj" />
+    <Project Path="src/Shared/WKMultiPlayerMod.Shared.csproj" />
     <Project Path="src/Generators/WKMultiPlayerMod.Generators.csproj" Id="8aefc9bf-58c1-46da-8b3c-7d026876f631" />
   </Folder>
   <Folder Name="/test/">
-    <Project Path="D:/DevelopmentPortfolio/c#/WKMultiPlayerMod/src/Test/test.csproj" />
+    <Project Path="src/Test/test.csproj" />
   </Folder>
   <Folder Name="/解决方案项/">
     <File Path=".gitattributes" />

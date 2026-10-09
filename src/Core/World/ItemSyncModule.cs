@@ -240,7 +240,7 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 	/// 客机向主机请求场景物品销毁表 (NeedRemoveChunk)
 	/// 接收函数: <see cref="HandleSceneRemoveChunkRequest"/>
 	/// </summary>
-	private void SendSceneRemoveChunkRequest() {
+	public void SendSceneRemoveChunkRequest() {
 		if (MPSteamworks.IsHost) return;
 
 		MPMain.LogInfo("[MP ItemSync] Requesting Scene Tombstone Chunk from Host...");

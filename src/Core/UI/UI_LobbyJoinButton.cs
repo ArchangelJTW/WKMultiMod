@@ -73,7 +73,7 @@ public class UI_LobbyJoinButton : MonoBehaviour, IPointerEnterHandler, IPointerE
 			Joining();
 			try {
 				// await 连接大厅,等待结果
-				bool success = await MPSteamworks.Instance.JoinRoomAsync(lobby);
+				bool success = await MPCore.Instance.JoinLobbyAsync(lobby.Id);
 				if (success) {
 					// 加入成功,更新状态
 					JoinSuccess();
@@ -242,7 +242,6 @@ public class UI_LobbyJoinButton : MonoBehaviour, IPointerEnterHandler, IPointerE
 	#region[大厅加入事件回调]
 	// 加入中 - 目前没有额外逻辑
 	public void Joining() {
-		MPCore.SetStatus(MPStatus.LOBBY_MASK, MPStatus.JoiningLobby);
 		// 禁止同一标签页内按钮点击
 		button!.interactable = false;
 		var pane = GetComponentInParent<UI_LobbyListPane>();
@@ -255,8 +254,7 @@ public class UI_LobbyJoinButton : MonoBehaviour, IPointerEnterHandler, IPointerE
 	}
 	// 加入失败 - 目前没有额外逻辑
 	public void JoinFailed() {
-		MPCore.SetStatus(MPStatus.LOBBY_MASK, MPStatus.LobbyConnectionError);
-		MPCore.Instance.ResetStateVariables();
+		// The core owns failure cleanup, including preserving a reconnect ticket.
 		// 恢复同一标签页内按钮点击
 		button!.interactable = true;
 		var pane = GetComponentInParent<UI_LobbyListPane>();
@@ -269,7 +267,6 @@ public class UI_LobbyJoinButton : MonoBehaviour, IPointerEnterHandler, IPointerE
 
 	// 加入成功 - 目前没有额外逻辑
 	public void JoinSuccess() {
-		MPCore.SetStatus(MPStatus.LOBBY_MASK, MPStatus.InLobby);
 		// 关闭Loading弹窗
 		MPEventBusGame.NotifyHideLoading();
 	}

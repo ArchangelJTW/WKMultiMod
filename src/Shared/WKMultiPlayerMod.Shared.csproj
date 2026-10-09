@@ -7,6 +7,8 @@
 		<LangVersion>10.0</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
+		<SolutionDir Condition="'$(SolutionDir)' == '' Or '$(SolutionDir)' == '*Undefined*'">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '../..'))</SolutionDir>
+		<DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
 
 		<OutputPath>bin\$(Configuration)\</OutputPath>
 	</PropertyGroup>
@@ -23,11 +25,11 @@
 		</ItemGroup>
 
 		<!--生成.dll复制到Unity项目下-->
-		<Copy SourceFiles="@(SharedOutputFiles)" DestinationFolder="$(UnityProject)\Assets\Plugins" SkipUnchangedFiles="true" />
+		<Copy Condition="'$(UnityProject)' != ''" SourceFiles="@(SharedOutputFiles)" DestinationFolder="$(UnityProject)\Assets\Plugins" SkipUnchangedFiles="true" />
 		<!--生成.dll复制到bin\解决方案配置-->
 		<Copy SourceFiles="@(SharedOutputFiles)" DestinationFolder="$(SolutionDir)bin\$(Configuration)\" SkipUnchangedFiles="true" />
 		<!--生成.dll复制到游戏文件夹-->
-		<Copy SourceFiles="@(SharedOutputFiles)" DestinationFolder="$(GamePath)\BepInEx\plugins\MP" SkipUnchangedFiles="true" />
+		<Copy Condition="'$(DeployToGame)' == 'true' And '$(GamePath)' != ''" SourceFiles="@(SharedOutputFiles)" DestinationFolder="$(GamePath)\BepInEx\plugins\MP" SkipUnchangedFiles="true" />
 
 	</Target>
 

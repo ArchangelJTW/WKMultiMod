@@ -90,6 +90,12 @@ public class MPGameModeManager {
 		return CurrentData;
 	}
 
+	/// <summary>Restore lobby bookkeeping without replacing the live player/world.</summary>
+	public static void ResumeLoadedGameMode(GameModeData data) {
+		CurrentData = data;
+		MPCore.SetStatus(MPStatus.INIT_MASK, MPStatus.Initialized);
+	}
+
 	public static void LoadGameModeIfChanged(GameModeData data) {
 		if (CurrentData != null && CurrentData == data)
 			return;
@@ -133,6 +139,7 @@ public class MPGameModeManager {
 	/// 重加载游戏模式
 	/// </summary>
 	public static void RestartGameMode() {
+		bool afterDeath = CheckpointSyncManager.Current?.HasPendingDeath ?? false;
 		if (CurrentData != null) {
 			LoadGameMode(CurrentData);
 			MPCore.Instance.StartCoroutine(ExecuteRestartCMD());
@@ -144,6 +151,13 @@ public class MPGameModeManager {
 			// 等待地图加载完成 || WorldLoader.instance 为空(游乐场)
 			yield return new WaitUntil(() => WorldLoader.isLoaded || WorldLoader.instance == null);
 
+			if (afterDeath && CheckpointSyncManager.Current != null) {
+				var checkpoints = CheckpointSyncManager.Current;
+				while (checkpoints.IsResolving) yield return null;
+				if (checkpoints.HasPendingDeath)
+					yield return checkpoints.ResolveSpawn(CheckpointSpawnReason.DeathRespawn);
+				yield break; // Do not regrant a kit through restart auto-commands after death.
+			}
 			// 加载完成后执行加入指令
 			if (MPSteamworks.Instance.LobbyData.TryGetValue(MPKeys.RESTART_COMMAND, out var cmdData) && !string.IsNullOrEmpty(cmdData)) {
 				Patch_CommandConsole.ExecuteCommandForcefully(cmdData);

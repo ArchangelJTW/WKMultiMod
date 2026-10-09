@@ -37,6 +37,10 @@ public class Patch_CL_GameManager {
 	[HarmonyPatch(nameof(CL_GameManager.Die))]
 	[HarmonyPrefix]
 	public static void Die(string type) {
+		// Record death even after a transient disconnect/manual leave. Rejoining
+		// must never turn this death into a pre-death live reconnect.
+		if (!CL_GameManager.isDead() && !CL_GameManager.gMan.IsReviving())
+			CheckpointSyncManager.Current?.RecordDeath();
 		// 死亡切换发生前通知总线
 		if (MPCore.IsInLobby && !CL_GameManager.gMan.IsReviving()) {
 			MPEventBusGame.NotifyPlayerDeath(type, Patch_ENT_Player.killDamageInfo);

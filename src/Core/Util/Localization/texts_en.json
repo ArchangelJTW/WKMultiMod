@@ -246,6 +246,8 @@
     "InLobby": "In Lobby",
     "InvalidLobbyNameOrId": "Could not find a lobby with matching name and the input is not a valid ID format",
     "JoinFormatError": "ForMat error \nUsage: join <lobby_id>",
+    "JoinAlreadyInProgress": "A lobby join is already in progress; please wait for it to finish.",
+    "NoLobbyToReconnect": "No previous lobby is available. Use join <lobby_id>.",
     "JoinLobbyFailed": "Fail to join lobby",
     "JoinUsage": "Usage: join <lobby_id>",
     "JoinedTeam": "Joined team: {0}",
@@ -296,6 +298,7 @@
     "Invite": "Open the Steam overlay to invite your friends.",
     "Join": "[Lobby Name|Lobby id]:The name or ID of the lobby to join. It will first try to match by name; if no match is found, it will fall back to matching by ID.",
     "JoinTeam": "[Team Name]: Join the specified team.",
+    "Reconnect": "Reconnect to the current/last lobby without resetting a still-loaded run.",
     "Leave": "Leave the current lobby.",
     "LobbyId": "Get the current lobby ID and copy it to the clipboard.",
     "LobbyList": "Get all available lobbies.",
@@ -314,6 +317,13 @@
     "TeamRule": "[Team A] [Team B] [Rule Name] [true|false|default]: Set team rules. (e.g., teamrule A B pvp true , A C hang true grab true)",
     "Test": "[Number]: This is not for you — it's a test function for MPMod developers, all in Chinese, but does not affect game balance.",
     "TpTo": "[steamId]: Match using the ID from allplayer (suffix matching, e.g., tpto 22 for target steamId 561198279116422)."
+  },
+  "Checkpoint": {
+    "Captured": "[MP Checkpoint] Captured host checkpoint: {0} (level {1}).",
+    "Failed": "[MP Checkpoint] Could not resolve checkpoint spawn: {0}",
+    "Timeout": "[MP Checkpoint] Host checkpoint request timed out. Normal spawn is unchanged; a pending death will retry after reconnecting.",
+    "Spawned": "[MP Checkpoint] Joined at the host's checkpoint: {0}. Your own items were kept.",
+    "SpawnedEmpty": "[MP Checkpoint] Respawned at the host's later checkpoint: {0}. Inventory is empty."
   },
   "LocalPlayer": {
     "DataAcquisitionException": "[MP LP] Local player data acquisition exception.",
@@ -348,6 +358,7 @@
     "PlayerDisconnected": "[MPCore] Player disconnected Id: {0}",
     "PlayerJoinedLobby": "[MPCore] New player joined the lobby, Id: {0}",
     "PlayerLeftLobby": "[MPCore] Player left the lobby Id: {0}",
+    "ResumedLoadedWorld": "[MP Reconnect] Resumed lobby {0} without reloading the world; position and inventory preserved.",
     "RequestedInitData": "[MPCore] Requested initialization data from the host.",
     "SceneLoadingCompleted": "[MPCore] Scene loading completed: {0}",
     "SteamIdDataDebug": "[MPCore] steamId: {0} data: {1}",
@@ -400,6 +411,7 @@
     "HostChanged": "[MPSW] Host change: {0} -> {1}",
     "InvalidParam": "[MPSW] Invalid parameter, maxPlayers exceeds limit",
     "JoinLobbyException": "[MPSW] Join lobby exception: {0}",
+    "LobbyJoinTimeout": "[MP Reconnect] Steam lobby join timed out. Your loaded run is kept; restore your connection and try reconnect again.",
     "JoinLobbySuccess": "[MPSW] Successfully joined lobby: {0}",
     "LimitExceeded": "[MPSW] Limit exceeded, this account may have created too many lobbies",
     "LimitedUserAccount": "[MPSW] Account restricted, cannot use social features",

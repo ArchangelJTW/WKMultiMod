@@ -150,6 +150,10 @@ public class MPConfig {
 
 	private static ConfigEntry<bool> _allowCheats;
 	private static ConfigEntry<bool> _allowPVP;
+	private static ConfigEntry<bool> _joinAtHostCheckpoint;
+	private static ConfigEntry<bool> _respawnAtHostCheckpoint;
+	public static bool JoinAtHostCheckpoint => _joinAtHostCheckpoint.Value;
+	public static bool RespawnAtHostCheckpoint => _respawnAtHostCheckpoint.Value;
 
 	public static bool AllowCheats {
 		get { return _allowCheats.Value; }
@@ -395,6 +399,11 @@ Active配置项控制玩家造成的伤害倍率 (信号枪灼烧除外)
 			"Controls whether cheats are allowed by LobbyRule in lobby you host.\n" +
 			"控制由你开启的房间是否默认可以使用cheats"
 			);
+		_joinAtHostCheckpoint = config.Bind("LobbyRule", "JoinAtHostCheckpoint", true,
+			"Start new/late joiners at your latest checkpoint, keeping their own starting items. Requires this build on both peers.");
+		_respawnAtHostCheckpoint = config.Bind("LobbyRule", "RespawnAtHostCheckpoint", true,
+			"After death, advance a teammate to your checkpoint only if it is later than theirs, with completely empty inventory.");
+
 		_allowPVP = config.Bind<bool>(
 			"LobbyRule", "PVP", false,
 			"Controls whether PvP is enabled by LobbyRule in lobby you host.\n" +

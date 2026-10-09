@@ -1,0 +1,8 @@
+{
+    "name": "Simple_Multi_Player",
+    "description": "A mod that enables multiplayer functionality in White Knuckle.Multi Discord Server:https://discord.gg/huHkf6ChcV \n256 characters are not enough to explain how to use it.\nSee github page for details.详情见github页面.",
+    "version_number": "1.8.3",
+    "dependencies": [
+    ], 
+    "website_url": "https://github.com/Shen-X-L/WKMultiMod"
+}

@@ -516,7 +516,7 @@ public class EnemySyncModule : Singleton<EnemySyncModule>, ISyncModule {
 	/// 客机向主机请求生物死亡表 (NeedRemoveChunk)
 	/// 接收函数: <see cref="HandleChunkRequest"/>
 	/// </summary>
-	private void SendKillChunkRequest() {
+	public void SendKillChunkRequest() {
 		if (MPSteamworks.IsHost || !IsEnabled) return;
 		var writer = GetWriter(MPSteamworks.UserSteamId, MPSteamworks.Instance.HostSteamId, PacketType.EnemySync);
 		writer.Put((byte)EnemySyncAction.KillChunkRequest);

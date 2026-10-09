@@ -282,6 +282,8 @@
     "InLobby": "在联机大厅中",
     "InvalidLobbyNameOrId": "无法找到匹配名称的大厅, 且输入不是有效的 ID 格式",
     "JoinFormatError": "格式错误\n用法: join <大厅ID>",
+    "JoinAlreadyInProgress": "正在加入大厅，请等待本次连接结束。",
+    "NoLobbyToReconnect": "没有可重连的大厅，请使用 join <大厅ID>。",
     "JoinLobbyFailed": "加入大厅失败",
     "JoinUsage": "用法: join <大厅ID>",
     "JoinedTeam": "已加入队伍: {0}",
@@ -332,6 +334,7 @@
     "Invite": "唤醒 Steam 界面邀请你的好友.",
     "Join": "[大厅名称|大厅 ID]: 要加入的大厅名称或 ID. 优先按名称匹配；若未找到则按 ID 匹配.",
     "JoinTeam": "[队伍名称]: 加入指定的队伍.",
+    "Reconnect": "重连当前或上一个大厅，保留仍在加载中的本局位置和背包。",
     "Leave": "离开当前大厅.",
     "LobbyId": "获取当前大厅 ID 并复制到剪贴板.",
     "LobbyList": "获取所有可用大厅.",
@@ -350,6 +353,13 @@
     "TeamRule": "[队伍A] [队伍B] [规则名称] [true|false|default]: 设置队伍规则.  (例如：teamrule A B pvp true , A C hang true grab true) ",
     "Test": "[数字]: 这不是给你用的——这是 MPMod 开发者的测试函数, 全是中文, 但不会影响游戏平衡.",
     "TpTo": "[steamId]: 传送到目标玩家, 使用 allplayer 获取的 ID 进行匹配 (后缀匹配, 例如：目标 steamId 为 561198279116422 时输入 tpto 22) ."
+  },
+  "Checkpoint": {
+    "Captured": "[MP Checkpoint] 已记录房主检查点：{0}（关卡 {1}）。",
+    "Failed": "[MP Checkpoint] 无法完成检查点出生：{0}",
+    "Timeout": "[MP Checkpoint] 请求房主检查点超时。保持普通出生位置，重连后将重试死亡后的检查点请求。",
+    "Spawned": "[MP Checkpoint] 已在房主检查点 {0} 出生，保留自己的物品。",
+    "SpawnedEmpty": "[MP Checkpoint] 已在房主更远的检查点 {0} 重生，背包为空。"
   },
   "LocalPlayer": {
     "DataAcquisitionException": "[MP LP] 本地玩家数据获取异常.",
@@ -384,6 +394,7 @@
     "PlayerDisconnected": "[MPCore] 玩家断连 Id: {0}",
     "PlayerJoinedLobby": "[MPCore] 玩家加入大厅 Id: {0}",
     "PlayerLeftLobby": "[MPCore] 玩家离开大厅 Id: {0}",
+    "ResumedLoadedWorld": "[MP Reconnect] 已恢复大厅 {0}，未重载地图，保留位置和背包。",
     "RequestedInitData": "[MPCore] 已向主机请求初始化数据",
     "SceneLoadingCompleted": "[MPCore] 场景加载完成: {0}",
     "SteamIdDataDebug": "[MPCore] steamId: {0} data: {1}",
@@ -436,6 +447,7 @@
     "HostChanged": "[MPSW] 主机变更: {0} -> {1}",
     "InvalidParam": "[MPSW] 参数错误,maxPlayers 设置超限",
     "JoinLobbyException": "[MPSW] 加入大厅异常: {0}",
+    "LobbyJoinTimeout": "[MP Reconnect] Steam 大厅连接超时。已保留本局状态，恢复网络后可再次使用 reconnect。",
     "JoinLobbySuccess": "[MPSW] 加入大厅成功: {0}",
     "LimitExceeded": "[MPSW] 达到上限,可能该账号已经开了太多的房间",
     "LimitedUserAccount": "[MPSW] 账号受限 无法使用社交功能",

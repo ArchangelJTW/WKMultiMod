@@ -151,6 +151,12 @@ public class MPPacketRouter {
 		ReadOnlySpan<byte> span = data;
 		// 发送方ID
 		var (senderId, targetId, packetType) = PeekHeader(data);
+		// Automatic world changes must come from the authenticated direct peer,
+		// never a spoofed header, broadcast or forwarded packet.
+		if ((PacketType)packetType == PacketType.CheckpointSpawn
+			&& (senderId != connectionId || targetId != MPSteamworks.UserSteamId)) return;
+		if (CheckpointSyncManager.IsApplying && (PacketType)packetType is
+			PacketType.ClimbableSync or PacketType.SceneItemSync or PacketType.DroppedItemSync or PacketType.EnemySync) return;
 
 		// 转发:目标不是我,也不是广播,也不是特殊判断ID
 		if (targetId != MPSteamworks.UserSteamId

@@ -79,6 +79,13 @@ public class MPCore : MonoSingleton<MPCore> {
 	// 玩家数量同步间隔
 	private TickTimer _syncTick = new TickTimer(3f, true);
 
+	private readonly LobbyResumeState _resumeState = new();
+	private GameModeData? _resumeMode;
+	private int _worldRevision;
+	private int _joinOperationVersion;
+	private bool _joinInProgress;
+	private Coroutine? _initGamemodeRoutine;
+
 	#region[	管理器实例]
 
 	// Steam网络管理器 本地数据获取类
@@ -88,6 +95,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	private MPAssetManager _MPAssetManager;
 	private UI_Manager _UIManager;
 	private WorldSyncManager _WorldSyncManager;
+	private CheckpointSyncManager _CheckpointSync;
 
 	#endregion
 
@@ -99,10 +107,10 @@ public class MPCore : MonoSingleton<MPCore> {
 	// 是否处于大厅中
 	public static bool IsInLobby => MultiPlayerStatus.IsInLobby();
 	public static bool IsInitialized => MultiPlayerStatus.IsInitialized();
-	public static bool IsReady => MultiPlayerStatus.IsReady();
+	public static bool IsReady => MultiPlayerStatus.IsReady() && !CheckpointSyncManager.IsApplying;
 
 	// 是否满足同步条件(处于大厅中且已初始化且有连接)
-	public static bool CanSync => IsInLobby && IsInitialized && MPSteamworks.Instance.HasConnections;
+	public static bool CanSync => IsReady && MPSteamworks.Instance.HasConnections;
 
 	#endregion
 
@@ -163,7 +171,10 @@ public class MPCore : MonoSingleton<MPCore> {
 	}
 
 	void Update() {
+		if (_LocalPlayer != null) _LocalPlayer.ShouldSendData = CanSync && IsWorldReady();
 		if (!IsInitialized || !IsInLobby) return;
+		if (!_resumeState.HasSession || _resumeState.WorldRevision != _worldRevision)
+			RememberLoadedSession();
 
 		// 定期检查玩家数量和连接状态,修复异常状态
 		CheckAndRepairPlayers();
@@ -238,6 +249,7 @@ public class MPCore : MonoSingleton<MPCore> {
 
 			// 初始化世界同步管理器
 			_WorldSyncManager = WorldSyncManager.InitializeOn(gameObject);
+			_CheckpointSync = CheckpointSyncManager.InitializeOn(gameObject);
 
 			// 订阅网络事件
 			SubscribeToEvents();
@@ -342,6 +354,9 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// 场景加载完成时调用
 	/// </summary>
 	private void OnSceneLoaded(Scene scene, LoadSceneMode mode) {
+		_worldRevision++;
+		ClearResumeState();
+		_LocalPlayer?.CachePlayerReferences();
 		// 重置偏移高度
 		Patch_CL_GameManager.RestartHeightOffset();
 		IsGrabOrHangState = ENT_Player.InteractType.hanging;
@@ -392,20 +407,82 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// <summary>
 	/// 退出联机模式时重置设置
 	/// </summary>
-	public void ResetStateVariables() {
-		LocalPlayer.Instance.ShouldSendData = false;
+	public void ResetStateVariables(bool preserveProgress = false) {
+		RememberLoadedSession();
+		bool keepWorld = preserveProgress && CanKeepLoadedWorld();
+		_joinOperationVersion++;
+		_joinInProgress = false;
+		_CheckpointSync?.CancelRequest();
+		StopGamemodeInitialization();
+		if (_LocalPlayer != null) _LocalPlayer.ShouldSendData = false;
 		SetStatus(MPStatus.INIT_MASK, MPStatus.NotInitialized);
 		SetStatus(MPStatus.LOBBY_MASK, MPStatus.NotInLobby);
 		ClearCurrentData();
 		_MPSteamworks?.DisconnectAll();
 		_RPManager?.ResetAll();
-		_WorldSyncManager?.LeaveAll();
+		if (keepWorld) {
+			// Retain identities/history for this loaded map: host reconnect snapshots
+			// must not instantiate duplicate pitons or dropped items.
+			_WorldSyncManager?.SuspendForReconnect();
+		} else {
+			ClearResumeState();
+			_WorldSyncManager?.LeaveAll();
+			CurrentTeam = MPKeys.DEFAULT_TEAM;
+		}
 		TeamRuleManager.ClearCache();
-		// 是否需要重置饰品/绑定
-		if (NeedResetTrinkets && NeedResetGamemodeName != null) {
+		if (!keepWorld && NeedResetTrinkets && NeedResetGamemodeName != null) {
 			StatManager.saveData.SetGamemodeTrinkets(NeedResetGamemodeName, new List<string>());
 			NeedResetTrinkets = false;
 		}
+	}
+
+	private static bool IsWorldReady() {
+		var scene = SceneManager.GetActiveScene().name;
+		if (scene != "Game-Main" && scene != "Playground") return false;
+		var player = ENT_Player.GetPlayer();
+		return player != null && !player.IsDead()
+			&& (scene == "Playground" || (WorldLoader.instance != null && WorldLoader.isLoaded));
+	}
+
+	private void RememberLoadedSession() {
+		if (!IsInitialized || !IsInLobby || _MPSteamworks == null || !_MPSteamworks.IsInLobby
+			|| MPSteamworks.IsHost || CurrentData == null || !IsWorldReady()
+			|| CheckpointSyncManager.IsApplying || (_CheckpointSync?.HasPendingDeath ?? false)) return;
+		_resumeMode = CurrentData;
+		_resumeState.Remember(_MPSteamworks.LobbyId, JsonConvert.SerializeObject(CurrentData), _worldRevision);
+	}
+
+	private bool CanKeepLoadedWorld() {
+		if (!_resumeState.HasSession || _resumeState.WorldRevision != _worldRevision
+			|| _resumeMode == null || !IsWorldReady() || (_CheckpointSync?.HasPendingDeath ?? false)) return false;
+		if (CL_GameManager.gamemode == null || CL_GameManager.gamemode.name != _resumeMode.gameModeName) return false;
+		return _resumeMode.seed.HasValue
+			? WorldLoader.instance != null && WorldLoader.instance.seed == _resumeMode.seed.Value
+			: SceneManager.GetActiveScene().name == "Playground";
+	}
+
+	public void InvalidateReconnectAfterDeath() => ClearResumeState();
+
+	public void RefreshAfterCheckpoint() {
+		ClearResumeState();
+		RememberLoadedSession();
+		_LocalPlayer.CachePlayerReferences();
+		_LocalPlayer.RefreshForConnection();
+	}
+
+	private void ClearResumeState() {
+		_resumeState.Clear();
+		_resumeMode = null;
+	}
+
+	private bool TryResumeLoadedWorld(GameModeData data) {
+		if (!CanKeepLoadedWorld() || !_resumeState.CanResume(
+			_MPSteamworks.LobbyId, JsonConvert.SerializeObject(data), _worldRevision)) return false;
+		MPGameModeManager.ResumeLoadedGameMode(data);
+		_LocalPlayer.CachePlayerReferences();
+		_LocalPlayer.RefreshForConnection();
+		MPMain.LogInfo(Get("MPCore.ResumedLoadedWorld", _MPSteamworks.LobbyId));
+		return true;
 	}
 
 	/// <summary>
@@ -575,6 +652,15 @@ public class MPCore : MonoSingleton<MPCore> {
 		CommandConsole.BuildCommand("join", Join)
 			.NotCheat().Description(GetSmart("CommandHelp.Join"))
 			.AutocompleteCustom(JoinAutocomplete);
+
+		CommandConsole.BuildCommand("reconnect", (args) => {
+			ulong lobbyId = _MPSteamworks.IsInLobby ? _MPSteamworks.LobbyId : _resumeState.LobbyId;
+			if (lobbyId == 0) {
+				CommandConsole.LogError(Get("CommandConsole.NoLobbyToReconnect"));
+				return;
+			}
+			_ = JoinLobbyAsync(lobbyId);
+		}).NotCheat().Description(GetSmart("CommandHelp.Reconnect"));
 
 		// 离开大厅
 		CommandConsole.BuildCommand("leave", Leave)
@@ -912,6 +998,7 @@ public class MPCore : MonoSingleton<MPCore> {
 
 		// 设置状态为正在连接
 		SetStatus(MPStatus.LOBBY_MASK, MPStatus.JoiningLobby);
+		int operation = ++_joinOperationVersion;
 
 		// 预设置大厅数据
 		var lobbyData = new Dictionary<string, string>() {
@@ -921,6 +1008,7 @@ public class MPCore : MonoSingleton<MPCore> {
 		try {
 			// 直接 await 异步版本
 			bool success = await _MPSteamworks.CreateRoomAsync(maxPlayers, lobbyData);
+			if (operation != _joinOperationVersion) return;
 
 			if (success) {
 				// 连接成功后的逻辑处理
@@ -958,9 +1046,9 @@ public class MPCore : MonoSingleton<MPCore> {
 				CommandConsole.LogError(Get("CommandConsole.CreateLobbyFailed"));
 			}
 		} catch (Exception ex) {
-			// 捕获任何未预料的崩溃
-			SetStatus(MPStatus.LOBBY_MASK, MPStatus.LobbyConnectionError);
-			MPMain.LogError(Get("CommandConsole.CriticalErrorDuringCreate", ex.Message));
+			if (operation != _joinOperationVersion) return;
+			MPMain.LogError(Get("MPCore.CriticalErrorDuringCreate", ex.Message));
+			ResetStateVariables();
 		}
 	}
 
@@ -990,9 +1078,8 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// 加入大厅
 	/// </summary>
 	public async void Join(string[] args) {
-		// 已经在大厅
-		if (IsInLobby) {
-			CommandConsole.LogError(Get("CommandConsole.AlreadyInOnlineMode"));
+		if (_joinInProgress || MultiPlayerStatus.GetField(MPStatus.LOBBY_MASK) == MPStatus.JoiningLobby) {
+			CommandConsole.LogError(Get("CommandConsole.JoinAlreadyInProgress"));
 			return;
 		}
 		// 缺失名称/Id参数
@@ -1002,6 +1089,15 @@ public class MPCore : MonoSingleton<MPCore> {
 		}
 
 		string input = string.Join(" ", args);
+		// Private lobbies and reconnects by ID must not depend on a public search.
+		if (ulong.TryParse(input, out var directId)) {
+			await JoinLobbyAsync(directId);
+			return;
+		}
+		if (_MPSteamworks.IsInLobby && input == _MPSteamworks.LobbyName) {
+			await JoinLobbyAsync(_MPSteamworks.LobbyId);
+			return;
+		}
 		Lobby? targetLobby = null;
 
 		CommandConsole.Log(Get("CommandConsole.SearchingLobbyByName", input));
@@ -1057,25 +1153,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// 通用的加入大厅流程函数,处理连接逻辑和错误管理
 	/// </summary>
 	public async void Join(Lobby lobby, SteamId steamId) {
-		// 设置初始状态
-		SetStatus(MPStatus.LOBBY_MASK, MPStatus.JoiningLobby);
-		SetStatus(MPStatus.INIT_MASK, MPStatus.NotInitialized);
-		try {
-			bool success = await _MPSteamworks.JoinRoomAsync(lobby);
-
-			// 处理结果
-			if (success) {
-				SetStatus(MPStatus.LOBBY_MASK, MPStatus.InLobby);
-			} else {
-				SetStatus(MPStatus.LOBBY_MASK, MPStatus.LobbyConnectionError);
-				MPMain.LogError(Get("MPCore.JoinLobbyFailed"));
-				ResetStateVariables();
-			}
-		} catch (Exception ex) {
-			// 捕获任何未预料的异常 (网络崩溃, Steam客户端断开等)
-			SetStatus(MPStatus.LOBBY_MASK, MPStatus.LobbyConnectionError);
-			MPMain.LogError(Get("MPCore.CriticalErrorDuringJoin", ex.Message));
-		}
+		await JoinLobbyAsync(lobby.Id);
 	}
 
 	/// <summary>
@@ -1094,28 +1172,53 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// <summary>
 	/// 连接到特定Id的大厅
 	/// </summary>
-	private async Task ExecuteJoinProcess(ulong lobbyId) {
+	private Task<bool> ExecuteJoinProcess(ulong lobbyId) => JoinLobbyAsync(lobbyId);
+
+	/// <summary>Shared join path for console, UI, invites and reconnects.</summary>
+	public async Task<bool> JoinLobbyAsync(ulong lobbyId) {
+		if (_joinInProgress || MultiPlayerStatus.GetField(MPStatus.LOBBY_MASK) == MPStatus.JoiningLobby) {
+			CommandConsole.LogError(Get("CommandConsole.JoinAlreadyInProgress"));
+			return false;
+		}
+		if (lobbyId == 0) {
+			CommandConsole.LogError(Get("CommandConsole.InvalidLobbyNameOrId"));
+			return false;
+		}
+		if (_MPSteamworks.IsInLobby && (MPSteamworks.IsHost || _MPSteamworks.LobbyId != lobbyId)) {
+			CommandConsole.LogError(Get("CommandConsole.AlreadyInOnlineMode"));
+			return false;
+		}
+
+		RememberLoadedSession();
+		if (!CanKeepLoadedWorld() || _resumeState.LobbyId != lobbyId) CurrentTeam = MPKeys.DEFAULT_TEAM;
+		StopGamemodeInitialization();
+		_joinInProgress = true;
+		int operation = ++_joinOperationVersion;
+		_LocalPlayer.ShouldSendData = false;
+		SetStatus(MPStatus.LOBBY_MASK, MPStatus.JoiningLobby);
+		SetStatus(MPStatus.INIT_MASK, MPStatus.NotInitialized);
+		_RPManager.ResetAll();
 		MPMain.LogInfo(Get("MPCore.JoiningLobby", lobbyId.ToString()));
 
-		// 设置初始状态
-		SetStatus(MPStatus.LOBBY_MASK, MPStatus.JoiningLobby);
-
 		try {
-			// 直接 await 异步结果, 代码逻辑变为线性
 			bool success = await _MPSteamworks.JoinRoomAsync(new Lobby(lobbyId));
-
-			// 处理结果
+			if (operation != _joinOperationVersion) return false;
 			if (success) {
 				SetStatus(MPStatus.LOBBY_MASK, MPStatus.InLobby);
-			} else {
-				SetStatus(MPStatus.LOBBY_MASK, MPStatus.LobbyConnectionError);
-				CommandConsole.LogError(Get("CommandConsole.JoinLobbyFailed"));
-				ResetStateVariables();
+				StartGamemodeInitialization();
+				return true;
 			}
+			CommandConsole.LogError(Get("CommandConsole.JoinLobbyFailed"));
+			ResetStateVariables(preserveProgress: true);
+			return false;
 		} catch (Exception ex) {
-			// 捕获任何未预料的异常 (网络崩溃, Steam客户端断开等)
-			SetStatus(MPStatus.LOBBY_MASK, MPStatus.LobbyConnectionError);
-			MPMain.LogError(Get("CommandConsole.CriticalErrorDuringJoin", ex.Message));
+			if (operation == _joinOperationVersion) {
+				MPMain.LogError(Get("MPCore.CriticalErrorDuringJoin", ex.Message));
+				ResetStateVariables(preserveProgress: true);
+			}
+			return false;
+		} finally {
+			if (operation == _joinOperationVersion) _joinInProgress = false;
 		}
 	}
 
@@ -1123,7 +1226,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// 离开大厅
 	/// </summary>
 	public void Leave(string[] args) {
-		ResetStateVariables();
+		ResetStateVariables(preserveProgress: true);
 		MPMain.LogInfo(Get("MPCore.DisconnectedAndCleaned"));
 	}
 
@@ -1747,9 +1850,7 @@ public class MPCore : MonoSingleton<MPCore> {
 		MPMain.LogInfo(Get("MPCore.EnteringLobby", lobby.Id.ToString()));
 
 		// 启动协程发送请求初始化数据
-		if (IsInLobby && !IsInitialized && !MPSteamworks.IsHost) {
-			StartCoroutine(InitGamemodeRoutine());
-		}
+		StartGamemodeInitialization();
 
 		// 设置加入时玩家数据信息
 		joinedMemberData();
@@ -1759,18 +1860,13 @@ public class MPCore : MonoSingleton<MPCore> {
 
 		// 显示加入大厅信息
 		IEnumerator ShowLobbyData() {
-			// 在大厅未初始化
-			while (IsInLobby && !IsInitialized) yield return null;
-			// 初始地图加载
-			if (WorldLoader.initialized)
-				while (!WorldLoader.isLoaded)
-					yield return null;
-
+			int operation = _joinOperationVersion;
+			while (operation == _joinOperationVersion && IsInLobby
+				&& _MPSteamworks.LobbyId == lobby.Id.Value && (!IsInitialized || !IsWorldReady()))
+				yield return null;
 			yield return new WaitForSecondsRealtime(0.5f);
-			// 地图重载等待
-			if (WorldLoader.initialized)
-				while (!WorldLoader.isLoaded)
-					yield return null;
+			if (operation != _joinOperationVersion || !IsInLobby || !IsWorldReady()
+				|| _MPSteamworks.LobbyId != lobby.Id.Value) yield break;
 
 			var message = GetRandom("0_DisplayMessage.EnteredMessages",
 				lobby.GetData(MPKeys.LOBBY_NAME), lobby.MemberCount, lobby.MaxMembers, lobby.Id.Value);
@@ -1781,50 +1877,75 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// <summary>
 	/// 获取游戏模式数据的协程
 	/// </summary>
-	private IEnumerator InitGamemodeRoutine() {
-		if (MPSteamworks.IsHost || IsInitialized || !IsInLobby) yield break;
+	private void StartGamemodeInitialization() {
+		if (_initGamemodeRoutine == null && IsInLobby && !IsInitialized && !MPSteamworks.IsHost)
+			_initGamemodeRoutine = StartCoroutine(InitGamemodeRoutine());
+	}
 
-		for (int i = 0; i < 3; i++) {
-			if (!IsInLobby || IsInitialized) yield break;
-
-			string rawData = _MPSteamworks._currentLobby.GetData(MPKeys.GAMEMODE_JSON);
-			// 空数据尝试重试, 同时请求一次数据刷新
-			if (string.IsNullOrEmpty(rawData)) {
-				MPMain.LogWarning(Get("MPCore.GamemodeDataNotSynced", (i + 1).ToString()));
-				_MPSteamworks.RefreshLobbyData();
-				yield return new WaitForSeconds(1.0f);
-				continue; // 提前进入下一次重试
-			}
-
-			MPMain.LogInfo(Get("MPCore.GamemodeDataReceived", rawData));
-			// 尝试解析 JSON
-			GameModeData data = null;
-			try {
-				data = JsonConvert.DeserializeObject<GameModeData>(rawData);
-			} catch (JsonException ex) {
-				MPMain.LogError(Get("MPCore.GamemodeParseError", rawData, ex.Message));
-			}
-			// 解析失败, 等待后重试
-			if (data == null) {
-				yield return new WaitForSeconds(1.0f);
-				continue;
-			}
-
-			// 解析成功则加载
-			LoadGameMode(data);
-			// 等待地图加载完成
-			yield return new WaitUntil(() => WorldLoader.isLoaded == true);
-			// 加载完成后执行加入指令
-			string cmdData = _MPSteamworks._currentLobby.GetData(MPKeys.JOIN_COMMAND);
-			if (!string.IsNullOrEmpty(cmdData))
-				Patch_CommandConsole.ExecuteCommandForcefully(cmdData);
-
-			yield break;
+	private void StopGamemodeInitialization() {
+		if (_initGamemodeRoutine != null) {
+			StopCoroutine(_initGamemodeRoutine);
+			_initGamemodeRoutine = null;
 		}
+	}
 
-		if (!IsInitialized && !MPSteamworks.IsHost) {
-			MPMain.LogError(Get("MPCore.HandshakeFailed"));
-			Leave(null);
+	private IEnumerator InitGamemodeRoutine() {
+		yield return null; // Assign the handle before callbacks can retry initialization.
+		ulong lobbyId = _MPSteamworks.LobbyId;
+		try {
+			if (MPSteamworks.IsHost || IsInitialized || !IsInLobby) yield break;
+			for (int i = 0; i < 3; i++) {
+				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId || IsInitialized) yield break;
+				string rawData = _MPSteamworks._currentLobby.GetData(MPKeys.GAMEMODE_JSON);
+				if (string.IsNullOrEmpty(rawData)) {
+					MPMain.LogWarning(Get("MPCore.GamemodeDataNotSynced", (i + 1).ToString()));
+					_MPSteamworks.RefreshLobbyData();
+					yield return new WaitForSecondsRealtime(1f);
+					continue;
+				}
+				GameModeData? data = null;
+				try {
+					data = JsonConvert.DeserializeObject<GameModeData>(rawData);
+				} catch (JsonException ex) {
+					MPMain.LogError(Get("MPCore.GamemodeParseError", rawData, ex.Message));
+				}
+				if (data == null) {
+					yield return new WaitForSecondsRealtime(1f);
+					continue;
+				}
+
+				bool resumed = TryResumeLoadedWorld(data);
+				if (!resumed) {
+					ClearResumeState();
+					_WorldSyncManager.LeaveAll();
+					CurrentTeam = MPKeys.DEFAULT_TEAM;
+					_MPSteamworks.SetMemberData(MPKeys.TEAM, CurrentTeam);
+					LoadGameMode(data);
+				}
+				while (!IsWorldReady()) {
+					if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
+					yield return null;
+				}
+				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
+				if (!resumed && _CheckpointSync != null)
+					yield return _CheckpointSync.ResolveSpawn(CheckpointSpawnReason.LateJoin);
+				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
+				RememberLoadedSession();
+				_LocalPlayer.CachePlayerReferences();
+				_LocalPlayer.RefreshForConnection();
+				// Join commands can restart/teleport/grant items: don't replay on reconnect.
+				if (!resumed && !(_CheckpointSync?.SkipJoinCommands ?? false)) {
+					string cmdData = _MPSteamworks._currentLobby.GetData(MPKeys.JOIN_COMMAND);
+					if (!string.IsNullOrEmpty(cmdData)) Patch_CommandConsole.ExecuteCommandForcefully(cmdData);
+				}
+				yield break;
+			}
+			if (!IsInitialized && !MPSteamworks.IsHost && _MPSteamworks.LobbyId == lobbyId) {
+				MPMain.LogError(Get("MPCore.HandshakeFailed"));
+				ResetStateVariables(preserveProgress: true);
+			}
+		} finally {
+			_initGamemodeRoutine = null;
 		}
 	}
 
@@ -1861,7 +1982,7 @@ public class MPCore : MonoSingleton<MPCore> {
 				{ MPKeys.PLAYER_COLOR, playerColor},
 				{ MPKeys.JOIN_MESSAGE, finalJoinMsg },
 				{ MPKeys.LEAVE_MESSAGE, finalLeaveMsg },
-				{ MPKeys.TEAM, MPKeys.DEFAULT_TEAM },
+				{ MPKeys.TEAM, CurrentTeam },
 			});
 	}
 
@@ -1877,22 +1998,29 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// </summary>
 	/// <param name="friend"></param>
 	private void HandleLobbyMemberLeft(Friend friend) {
+		if (friend.Id == MPSteamworks.UserSteamId) {
+			ResetStateVariables(preserveProgress: true);
+			return;
+		}
 		_RPManager.ProcessPlayerLeave(friend.Id);
-		// 如果在大厅且已初始化且有连接,允许发送数据
-		LocalPlayer.Instance.ShouldSendData = IsInLobby && IsInitialized && MPSteamworks.Instance.HasConnections;
+		LocalPlayer.Instance.ShouldSendData = CanSync && IsWorldReady();
 	}
 
 	/// <summary>
 	/// 处理玩家连接事件
 	/// </summary>
 	private void HandlePlayerConnected(SteamId steamId) {
+		_LocalPlayer.RefreshForConnection();
+		_RPManager.ProcessMemberData(steamId, _MPSteamworks.GetAllMemberData(steamId));
+		var memberRequest = GetWriter(MPSteamworks.UserSteamId, steamId, PacketType.MemberDataMessage);
+		memberRequest.Put(false);
+		_MPSteamworks.SendToPeer(steamId, memberRequest);
 		if (MPSteamworks.IsHost) {
 			SceneItemModule.Instance.HandleSceneRemoveChunkRequest(steamId);
 			EnemySyncModule.Instance.HandleChunkRequest(steamId);
 			ClimbableSyncModule.Instance.HandleChunkRequest(steamId);
 		}
-		// 如果在大厅且已初始化且有连接,允许发送数据
-		LocalPlayer.Instance.ShouldSendData = IsInLobby && IsInitialized && MPSteamworks.Instance.HasConnections;
+		LocalPlayer.Instance.ShouldSendData = CanSync && IsWorldReady();
 	}
 
 	/// <summary>
@@ -1901,8 +2029,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	private void HandlePlayerDisconnected(SteamId steamId) {
 		MPMain.LogInfo(Get("MPCore.PlayerDisconnected", steamId.ToString()));
 		_RPManager.ProcessPlayerLeave(steamId);
-		// 如果在大厅且已初始化且有连接,允许发送数据
-		LocalPlayer.Instance.ShouldSendData = IsInLobby && IsInitialized && MPSteamworks.Instance.HasConnections;
+		LocalPlayer.Instance.ShouldSendData = CanSync && IsWorldReady();
 	}
 
 	/// <summary>
@@ -1926,7 +2053,7 @@ public class MPCore : MonoSingleton<MPCore> {
 
 		// 游戏模式切换
 		if (changedData.TryGetValue(MPKeys.GAMEMODE_JSON, out var gameModeValue))
-			StartCoroutine(InitGamemodeRoutine());
+			StartGamemodeInitialization();
 
 		// 处理是否允许作弊的特殊键, 直接影响游戏机制
 		if (changedData.TryGetValue(MPKeys.ALLOW_CHEATS, out var cheatsValue)) {

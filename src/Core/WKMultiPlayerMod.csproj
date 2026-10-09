@@ -4,13 +4,15 @@
 		<TargetFramework>netstandard2.1</TargetFramework>
 		<AssemblyName>WKMultiPlayerMod</AssemblyName>
 		<Product>WKMultiPlayerMod</Product>
-		<Version>1.8.3.0</Version>
+		<Version>1.8.3.2</Version>
 		<AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 		<LangVersion>latest</LangVersion>
 		<RootNamespace>WKMultiPlayerMod</RootNamespace>
 		<!-- 项目本身的 bin 目录 -->
 		<OutputPath>bin\$(Configuration)\</OutputPath>
 		<Nullable>enable</Nullable>
+		<SolutionDir Condition="'$(SolutionDir)' == '' Or '$(SolutionDir)' == '*Undefined*'">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '../..'))</SolutionDir>
+		<DeployToGame Condition="'$(DeployToGame)' == ''">false</DeployToGame>
 		<!-- 开启 将生成代码写入磁盘 -->
 		<CompilerGeneratedFilesOutputPath>Generated</CompilerGeneratedFilesOutputPath>
 		<EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
@@ -35,7 +37,7 @@
 			<AllOutputFiles Include="$(SolutionDir)bin\$(Configuration)\**\*.*" />
 		</ItemGroup>
 		<!-- 复制到游戏目录 -->
-		<Copy Condition="'$(GamePath)' != ''" SourceFiles="@(AllOutputFiles)" DestinationFolder="$(GamePath)\BepInEx\plugins\MP\%(RecursiveDir)" SkipUnchangedFiles="true" />
+		<Copy Condition="'$(DeployToGame)' == 'true' And '$(GamePath)' != ''" SourceFiles="@(AllOutputFiles)" DestinationFolder="$(GamePath)\BepInEx\plugins\MP\%(RecursiveDir)" SkipUnchangedFiles="true" />
 	</Target>
 
 	<!-- 定义游戏路径 -->

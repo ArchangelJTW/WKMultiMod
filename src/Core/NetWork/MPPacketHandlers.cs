@@ -20,6 +20,11 @@ using static WKMPMod.Util.DictionaryExtensions;
 namespace WKMPMod.NetWork;
 
 public class MPPacketHandlers {
+	[MPPacketHandler(PacketType.CheckpointSpawn)]
+	private static void HandleCheckpointSpawn(IDType senderId, DataReader reader) {
+		CheckpointSyncManager.Current?.HandlePacket(senderId, reader);
+	}
+
 	/// <summary>
 	/// 主机/客户端接收PlayerDataUpdate: 处理玩家数据更新<br/>
 	/// 发送函数 <see cref="LocalPlayer.TrySendLocalPlayerData"/><br/>
@@ -50,6 +55,7 @@ public class MPPacketHandlers {
 		if (senderId == MPSteamworks.UserSteamId) return;
 		var isResponse = reader.GetBool();
 		if (!isResponse) {
+			LocalPlayer.Instance.RefreshForConnection();
 			// 请求包
 			var writer = GetWriter(MPSteamworks.UserSteamId, senderId, PacketType.MemberDataMessage);
 			writer.Put(true);

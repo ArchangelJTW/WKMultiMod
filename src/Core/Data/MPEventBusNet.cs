@@ -30,6 +30,7 @@ public enum PacketType : ushort {
 
 	// 杂项
 	PlayerTeleportMessage = 48, // 客机->客机: false: 请求传送和传送数据 或 true: 响应传送和传送数据
+	CheckpointSpawn = 49, // Versioned, host-authenticated checkpoint request/reply
 	PlayerCheckRequest = 50,    // 客机->客机: 请求检查数据
 }
 
