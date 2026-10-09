@@ -1,4 +1,4 @@
-# Next-day multiplayer continuation — preview 1.8.3.4
+# Next-day multiplayer continuation — preview 1.8.3.5
 
 **Implemented/build-tested; still requires a real two-player save/quit/relaunch test.**
 Use save backups and a disposable run first. Both players must use this build.
@@ -57,6 +57,14 @@ rule. Once the host reaches an actual checkpoint, that checkpoint takes priority
 
 ## Implementation and safety
 
+- The 1.8.3.4 Unity checkpoint JSON omitted nested `progress`; 1.8.3.5 uses an
+  explicit public-field contract and checks a complete serialization round trip.
+  Locally owned, identity-validated 1.8.3.4 save geometry can recover that field
+  from the separately persisted checkpoint mark. Network replies never invent
+  missing progress or bypass validation.
+- A failed checkpoint response/loading/alignment does not count as a successful
+  join. Player/world synchronization and new multiplayer save stamping remain
+  blocked; update both players rather than accepting an unrelated starting map.
 - Calls `UI_GamemodeScreen_Panel.LoadGamemodeSave()` for Continue Multiplayer,
   never the new-game action. Uses the native Continue reference/action rather
   than testing English text or dereferencing a missing menu path.
@@ -125,7 +133,10 @@ rule. Once the host reaches an actual checkpoint, that checkpoint takes priority
    advancing to a later actual host checkpoint must not restore pre-death loot.
 9. Try another run with the same seed, a different player/Steam ID, changed
    settings, or malformed/future metadata. No unrelated guest inventory may load.
-10. Test saved side branches, rebased worlds, native disk revives and placed pitons.
+10. Specifically repeat a host resumed in the Silo/Pipeworks interlude: the guest
+    must load the interlude and matching terrain before pose sync starts. A missing
+    `progress` reply must fail clearly, not time out into a first-area ghost world.
+11. Test saved side branches, rebased worlds, native disk revives and placed pitons.
     Retain BOTH players' `BepInEx/LogOutput.log` before restarting after a failure.
 
 Rollback: close the game and restore your backed-up mod folder outside/into the

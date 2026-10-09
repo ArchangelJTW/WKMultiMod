@@ -104,11 +104,13 @@ public class MPCore : MonoSingleton<MPCore> {
 
 	// 多人模式状态
 	public static MPStatus MultiPlayerStatus = MPStatus.NotInitialized;
+	private static readonly WorldJoinAdmission WorldAdmission = new();
 
 	// 是否处于大厅中
 	public static bool IsInLobby => MultiPlayerStatus.IsInLobby();
 	public static bool IsInitialized => MultiPlayerStatus.IsInitialized();
-	public static bool IsReady => MultiPlayerStatus.IsReady() && !CheckpointSyncManager.IsApplying;
+	public static bool IsReady => MultiPlayerStatus.IsReady() && WorldAdmission.IsReady
+		&& !CheckpointSyncManager.IsApplying;
 
 	// 是否满足同步条件(处于大厅中且已初始化且有连接)
 	public static bool CanSync => IsReady && MPSteamworks.Instance.HasConnections;
@@ -174,7 +176,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	void Update() {
 		NativeRunPersistence.ObserveNativeWorld();
 		if (_LocalPlayer != null) _LocalPlayer.ShouldSendData = CanSync && IsWorldReady();
-		if (!IsInitialized || !IsInLobby) return;
+		if (!IsReady) return;
 		if (!_resumeState.HasSession || _resumeState.WorldRevision != _worldRevision)
 			RememberLoadedSession();
 
@@ -401,6 +403,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	public void ResetStateVariables(bool preserveProgress = false) {
 		RememberLoadedSession();
 		bool keepWorld = preserveProgress && CanKeepLoadedWorld();
+		WorldAdmission.Begin();
 		_joinOperationVersion++;
 		_joinInProgress = false;
 		_CheckpointSync?.CancelRequest();
@@ -438,7 +441,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	}
 
 	private void RememberLoadedSession() {
-		if (!IsInitialized || !IsInLobby || _MPSteamworks == null || !_MPSteamworks.IsInLobby
+		if (!IsReady || !IsInLobby || _MPSteamworks == null || !_MPSteamworks.IsInLobby
 			|| MPSteamworks.IsHost || CurrentData == null || !IsWorldReady()
 			|| CheckpointSyncManager.IsApplying || (_CheckpointSync?.HasPendingDeath ?? false)) return;
 		_resumeMode = CurrentData;
@@ -1012,6 +1015,7 @@ public class MPCore : MonoSingleton<MPCore> {
 		MPMain.LogInfo(Get("MPCore.CreatingLobby", lobbyName));
 
 		// 设置状态为正在连接
+		WorldAdmission.Begin();
 		SetStatus(MPStatus.LOBBY_MASK, MPStatus.JoiningLobby);
 		int operation = ++_joinOperationVersion;
 
@@ -1195,6 +1199,7 @@ public class MPCore : MonoSingleton<MPCore> {
 		}
 
 		RememberLoadedSession();
+		WorldAdmission.Begin();
 		if (!CanKeepLoadedWorld() || _resumeState.LobbyId != lobbyId) CurrentTeam = MPKeys.DEFAULT_TEAM;
 		StopGamemodeInitialization();
 		_joinInProgress = true;
@@ -1918,6 +1923,8 @@ public class MPCore : MonoSingleton<MPCore> {
 				ChangeRPFactoryId();
 				joinedMemberData();
 				if (data.seed.HasValue) NativeRunPersistence.BindHost(data);
+				WorldAdmission.Complete(CheckpointResolution.Normal);
+				if (data.seed.HasValue) NativeRunPersistence.RefreshBeforeSave();
 				_WorldSyncManager.RebindAfterCheckpointLoad();
 				_LocalPlayer.CachePlayerReferences();
 				_LocalPlayer.RefreshForConnection();
@@ -1991,9 +1998,18 @@ public class MPCore : MonoSingleton<MPCore> {
 				}
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
 				if (continuedSave) continuedSave = NativeRunPersistence.RestoreClientProgress(data, runId);
-				if (!resumed && _CheckpointSync != null)
+				var resolution = CheckpointResolution.Normal;
+				if (!resumed && _CheckpointSync != null) {
+					while (_CheckpointSync.IsResolving && IsInLobby && _MPSteamworks.LobbyId == lobbyId) yield return null;
 					yield return _CheckpointSync.ResolveSpawn(CheckpointSpawnReason.LateJoin);
+					resolution = _CheckpointSync.LastResolution;
+				}
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
+				if (!WorldAdmission.Complete(resolution)) {
+					MPMain.LogError("[MP Checkpoint] Join failed: host checkpoint placement did not complete. Refusing player/world sync in an unrelated starting world. Update both players and rejoin; the host's save is unchanged.");
+					ResetStateVariables();
+					yield break;
+				}
 				RememberLoadedSession();
 				_LocalPlayer.CachePlayerReferences();
 				_LocalPlayer.RefreshForConnection();

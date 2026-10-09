@@ -1,4 +1,4 @@
-# Reconnect, checkpoint and native-save preview — 1.8.3.4
+# Reconnect, checkpoint and native-save preview — 1.8.3.5
 
 Based on upstream `dev` commit `af7e782555f96ec72e4775df623299079c46d786`.
 Uses the unchanged working 1.8.3 resources in `resources/1.8.3/`.
@@ -49,6 +49,17 @@ lobby. Old hosts without this protocol fall back to normal initialization.
 
 ## Checkpoint implementation
 
+- Uses an explicit public-field Newtonsoft JSON contract for checkpoint
+  serialization/cloning/save geometry. In the 1.8.3.4 in-game interlude packet,
+  Unity JsonUtility omitted nested `progress`, causing repeated validation
+  failures and leaving the client at the beginning. Progress is now required on
+  the wire and retained through compression, clone and native-save round trips.
+- Loading a starting world is not network admission. Player poses, inventory
+  snapshots and world changes remain blocked until checkpoint placement succeeds
+  or the host explicitly returns normal spawn. An invalid reply/timeout/failed
+  regeneration leaves the join failed rather than syncing two unrelated worlds.
+- Checks the regenerated level's generation ID as well as its room name, and logs
+  the target room/ID/seed before loading and alignment.
 - Captures actual `UT_TravelDistanceCheckpoint.SetCheckpoint` events and
   registered non-session respawn-save events. Periodic/session autosaves and
   the host's current walking position are not treated as checkpoints.
@@ -120,7 +131,8 @@ On this workstation only .NET 10 is installed, so run the net8 tests with:
 DOTNET_ROLL_FORWARD=Major dotnet test tests/Progress.Tests/Progress.Tests.csproj -c Release
 ```
 
-The 98 tests cover entry callback/result ordering, live resume tickets,
+The 118 tests cover checkpoint JSON/clone/compression field preservation and
+failed/successful world admission, entry callback/result ordering, live resume tickets,
 native-handle close matching, persistent run/player/seed/mode matching, bounded
 save metadata, saved death/continuation policy, spawn policy, death/rejoin
 bookkeeping, response correlation/authentication and bounded snapshot compression. They do not execute Unity or simulate Steam transport.
@@ -133,7 +145,7 @@ and testing instructions (Python 3; no third-party dependencies):
 python3 scripts/package-preview.py
 ```
 
-Output: `bin/Release/WKMultiMod-1.8.3.4-preview.zip` and a SHA-256 checksum file.
+Output: `bin/Release/WKMultiMod-1.8.3.5-preview.zip` and a SHA-256 checksum file.
 Both players should extract the ZIP's `MP` folder into `BepInEx/plugins/`,
 replacing the existing `MP` files while the game is closed. Keep backups outside
 `BepInEx/plugins/` so the old DLLs are not loaded alongside the preview.
@@ -163,3 +175,8 @@ Use backups and a disposable run on both computers:
 9. Verify ordinary restart, disk/perk revives, Playground, host migration and
    disabled settings. Check logs for `[MP Checkpoint]`, `[MP Reconnect]` and `[MP Save]`.
 10. Follow the full save/quit/relaunch checklist in [saved-runs.md](saved-runs.md).
+11. Re-test a host resumed in the Silo/Pipeworks interlude. A fresh client must
+    load that actual room, not show a nearby ghost through first-area terrain.
+    Confirm `[MP Checkpoint] Loading host level ...` and `Joined at ...` appear.
+    Invalid snapshot/timeout tests must refuse admission instead of showing
+    apparently close players in different rooms.

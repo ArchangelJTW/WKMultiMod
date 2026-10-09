@@ -73,6 +73,9 @@ WHAT TO TEST:
   empty member-data/missing-player loop. Unknown poses say not synced yet.
 - Late join: host reaches a checkpoint, then walks past it. Join at the
   checkpoint (not the host's current position), keeping your own items.
+- Resumed interlude: the guest must load the host's actual interlude terrain,
+  not appear nearby in the first area. Look for Loading host level and Joined
+  at checkpoint messages. Failed placement now refuses multiplayer admission.
 - Live reconnect: keep your own position and inventory after network recovery.
 - Death/restart or death/rejoin: if the host has a later checkpoint on the
   same route, spawn there with empty hands/bag/pouches/pockets/artifacts.

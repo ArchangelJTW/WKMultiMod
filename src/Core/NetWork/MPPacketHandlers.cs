@@ -55,13 +55,15 @@ public class MPPacketHandlers {
 		if (senderId == MPSteamworks.UserSteamId) return;
 		var isResponse = reader.GetBool();
 		if (!isResponse) {
-			LocalPlayer.Instance.RefreshForConnection();
+			bool ready = MPCore.IsReady && MPCore.IsWorldReady();
+			if (ready) LocalPlayer.Instance.RefreshForConnection();
 			// 请求包
 			var writer = GetWriter(MPSteamworks.UserSteamId, senderId, PacketType.MemberDataMessage);
 			writer.Put(true);
 			writer.Put(MPSteamworks.Instance.GetAllMemberData());
-			writer.Put(LocalPlayer.Instance.LastPlayerData);
-			writer.Put(LocalPlayer.Instance.extraPlayerData);
+			// Metadata can flow before admission; coordinates/items cannot.
+			writer.Put(ready ? LocalPlayer.Instance.LastPlayerData : default(PlayerData));
+			writer.Put(ready ? LocalPlayer.Instance.extraPlayerData : new Dictionary<string, string>());
 			MPSteamworks.Instance.SendToPeer(senderId, writer);
 		} else {
 			// 响应包
@@ -71,8 +73,10 @@ public class MPPacketHandlers {
 			var playerId = playerData.playId;
 
 			RPManager.Instance.ProcessMemberData(senderId, memberData);
-			RPManager.Instance.ProcessPlayerData(playerId, ref playerData);
-			RPManager.Instance.ProcessExtraPlayerData(playerId, extraPlayerData);
+			if (playerId == senderId && playerData.TimestampTicks != 0) {
+				RPManager.Instance.ProcessPlayerData(playerId, ref playerData);
+				RPManager.Instance.ProcessExtraPlayerData(playerId, extraPlayerData);
+			}
 		}
 	}
 

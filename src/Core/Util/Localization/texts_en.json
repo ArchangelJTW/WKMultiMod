@@ -322,7 +322,7 @@
   "Checkpoint": {
     "Captured": "[MP Checkpoint] Captured host checkpoint: {0} (level {1}).",
     "Failed": "[MP Checkpoint] Could not resolve checkpoint spawn: {0}",
-    "Timeout": "[MP Checkpoint] Host checkpoint request timed out. Normal spawn is unchanged; a pending death will retry after reconnecting.",
+    "Timeout": "[MP Checkpoint] Host checkpoint request timed out. Checkpoint placement failed; this is not a successful normal spawn. A pending death will retry after reconnecting.",
     "Spawned": "[MP Checkpoint] Joined at the host's checkpoint: {0}. Your own items were kept.",
     "SpawnedEmpty": "[MP Checkpoint] Respawned at the host's later checkpoint: {0}. Inventory is empty."
   },

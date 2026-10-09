@@ -148,7 +148,7 @@ public class RPManager : Singleton<RPManager> {
 	/// 处理玩家位置数据
 	/// </summary>
 	public void ProcessPlayerData(IDType playerId, ref PlayerData playerData) {
-		if (!MPCore.IsInitialized || !MPCore.IsInLobby) return;
+		if (!MPCore.IsReady) return;
 
 		// 以后加上时间戳处理
 		if (Players.TryGetValue(playerId, out var container)) {
@@ -161,7 +161,7 @@ public class RPManager : Singleton<RPManager> {
 	}
 
 	public void ProcessExtraPlayerData(IDType playerId, Dictionary<string, string> playerData) {
-		if (!MPCore.IsInitialized || !MPCore.IsInLobby) return;
+		if (!MPCore.IsReady) return;
 
 		// 以后加上时间戳处理
 		if (Players.TryGetValue(playerId, out var container)) {

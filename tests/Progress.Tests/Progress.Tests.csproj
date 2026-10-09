@@ -13,6 +13,7 @@
     <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
     <!-- Link the production policy without loading Unity or deploying the mod. -->
     <Compile Include="../../src/Core/Core/LobbyResumeState.cs" Link="LobbyResumeState.cs" />
+    <Compile Include="../../src/Core/Core/WorldJoinAdmission.cs" Link="WorldJoinAdmission.cs" />
     <Compile Include="../../src/Core/NetWork/PeerConnectionLifetime.cs" Link="PeerConnectionLifetime.cs" />
     <Compile Include="../../src/Core/NetWork/LobbyEntryState.cs" Link="LobbyEntryState.cs" />
     <Compile Include="../../src/Core/Core/CheckpointPolicy.cs" Link="CheckpointPolicy.cs" />
@@ -20,5 +21,6 @@
     <Compile Include="../../src/Core/NetWork/RunSaveCodec.cs" Link="RunSaveCodec.cs" />
     <Compile Include="../../src/Core/NetWork/CheckpointRequestScope.cs" Link="CheckpointRequestScope.cs" />
     <Compile Include="../../src/Core/NetWork/CheckpointSnapshotCodec.cs" Link="CheckpointSnapshotCodec.cs" />
+    <Compile Include="../../src/Core/NetWork/CheckpointSnapshotJson.cs" Link="CheckpointSnapshotJson.cs" />
   </ItemGroup>
 </Project>

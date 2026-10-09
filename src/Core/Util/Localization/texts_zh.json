@@ -358,7 +358,7 @@
   "Checkpoint": {
     "Captured": "[MP Checkpoint] 已记录房主检查点：{0}（关卡 {1}）。",
     "Failed": "[MP Checkpoint] 无法完成检查点出生：{0}",
-    "Timeout": "[MP Checkpoint] 请求房主检查点超时。保持普通出生位置，重连后将重试死亡后的检查点请求。",
+    "Timeout": "[MP Checkpoint] 请求房主检查点超时，检查点放置失败，不能视为成功的普通出生。重连后将重试死亡后的检查点请求。",
     "Spawned": "[MP Checkpoint] 已在房主检查点 {0} 出生，保留自己的物品。",
     "SpawnedEmpty": "[MP Checkpoint] 已在房主更远的检查点 {0} 重生，背包为空。"
   },

@@ -182,7 +182,8 @@ public static class NativeRunPersistence {
 	/// <summary>Called before a native SaveSession snapshot is made, not a separate save writer.</summary>
 	public static void RefreshBeforeSave() {
 		if (!MPCore.IsWorldReady() || NativeContinuePending || CL_GameManager.IsLoading()
-			|| CheckpointSyncManager.IsApplying || CL_GameManager.gMan == null) return;
+			|| CheckpointSyncManager.IsApplying || CL_GameManager.gMan == null
+			|| (MPCore.IsInLobby && !MPCore.IsReady)) return;
 		try {
 			var current = ReadCurrent();
 			var mode = MPGameModeManager.CurrentData;
@@ -209,7 +210,8 @@ public static class NativeRunPersistence {
 
 	/// <summary>Refresh an existing native snapshot's metadata without changing its player/level data.</summary>
 	public static void BeforeSaveToFile(CL_SaveManager.SessionSave save) {
-		if (save == null || !MPCore.IsWorldReady() || CheckpointSyncManager.IsApplying || NativeContinuePending) return;
+		if (save == null || !MPCore.IsWorldReady() || CheckpointSyncManager.IsApplying || NativeContinuePending
+			|| (MPCore.IsInLobby && !MPCore.IsReady)) return;
 		try {
 			var metadata = ReadFlags(save.sessionFlags);
 			if (metadata == null || metadata.playerId != MPSteamworks.UserSteamId || metadata.seed != save.worldSeed

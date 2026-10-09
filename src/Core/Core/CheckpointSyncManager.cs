@@ -46,6 +46,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 	public static bool IsApplying { get; private set; }
 	public bool HasPendingDeath => _session.PendingDeath;
 	public bool IsResolving => _resolving;
+	public CheckpointResolution LastResolution { get; private set; } = CheckpointResolution.NotAttempted;
 	private bool _autoDeathAttempt;
 	public bool SkipJoinCommands { get; private set; }
 	private readonly CheckpointSessionState _session = new();
@@ -217,7 +218,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 	public void AttachNativeContinuation(HostCheckpointSnapshot? native) {
 		if (native == null || !Ready() || !BindCurrentSession() || native.seed != _session.Seed
 			|| native.modeSignature != _session.ModeSignature) return;
-		_hostContinuation = JsonUtility.FromJson<HostCheckpointSnapshot>(JsonUtility.ToJson(native));
+		_hostContinuation = CheckpointSnapshotJson.Clone(native);
 		_hostContinuation.lobbyId = _session.LobbyId;
 	}
 
@@ -264,13 +265,13 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		save.checkpointGeometry = string.Empty;
 		if (!save.wasHost || _hostCheckpoint == null || _hostCheckpoint.progress.route != anchor!.route) return;
 		// Clone before converting coordinate frames so the live network snapshot is unchanged.
-		var snapshot = JsonUtility.FromJson<HostCheckpointSnapshot>(JsonUtility.ToJson(_hostCheckpoint));
+		var snapshot = CheckpointSnapshotJson.Clone(_hostCheckpoint);
 		var position = new Vector3(anchor.position[0], anchor.position[1], anchor.position[2]);
 		var rotation = new Quaternion(anchor.rotation[0], anchor.rotation[1], anchor.rotation[2], anchor.rotation[3]);
 		snapshot.levelPosition = Quaternion.Inverse(rotation) * (snapshot.levelPosition - position);
 		snapshot.levelRotation = Quaternion.Inverse(rotation) * snapshot.levelRotation;
 		Validate(snapshot);
-		save.checkpointGeometry = Convert.ToBase64String(CheckpointSnapshotCodec.Encode(JsonUtility.ToJson(snapshot)));
+		save.checkpointGeometry = Convert.ToBase64String(CheckpointSnapshotCodec.Encode(CheckpointSnapshotJson.Serialize(snapshot)));
 	}
 
 	public void RestoreSavedRun(RunSaveData save) {
@@ -286,8 +287,8 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			_session.RestoreProgress(Remap(save.checkpoint), Remap(save.deathCheckpoint), save.pendingDeath);
 			if (MPSteamworks.IsHost && _session.PendingDeath) _session.CompleteRespawn();
 			if (!MPSteamworks.IsHost || !save.wasHost || anchorInfo?.GetLevel() == null || string.IsNullOrEmpty(save.checkpointGeometry)) return;
-			var snapshot = JsonUtility.FromJson<HostCheckpointSnapshot>(
-				CheckpointSnapshotCodec.Decode(Convert.FromBase64String(save.checkpointGeometry)));
+			var snapshot = CheckpointSnapshotJson.DeserializeSaved<HostCheckpointSnapshot>(
+				CheckpointSnapshotCodec.Decode(Convert.FromBase64String(save.checkpointGeometry)), save.checkpoint);
 			Validate(snapshot);
 			if (snapshot.seed != _session.Seed || snapshot.modeSignature != _session.ModeSignature
 				|| snapshot.progress.route != save.worldAnchor!.route) return;
@@ -336,15 +337,21 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 
 	/// <summary>Resolve a late join or a post-death spawn. An alive reconnect never calls this.</summary>
 	public IEnumerator ResolveSpawn(CheckpointSpawnReason reason) {
-		if (_resolving || !Ready() || !BindCurrentSession()) yield break;
+		if (_resolving) yield break;
+		LastResolution = CheckpointResolution.Failed;
+		if (!Ready() || !BindCurrentSession()) yield break;
 		if (_session.PendingDeath) reason = CheckpointSpawnReason.DeathRespawn;
 		SkipJoinCommands = reason == CheckpointSpawnReason.DeathRespawn;
-		if (reason == CheckpointSpawnReason.LiveReconnect || MPSteamworks.IsHost) yield break;
+		if (reason == CheckpointSpawnReason.LiveReconnect || MPSteamworks.IsHost) {
+			LastResolution = CheckpointResolution.Normal;
+			yield break;
+		}
 		var net = MPSteamworks.Instance;
 		string rule = reason == CheckpointSpawnReason.DeathRespawn ? MPKeys.RESPAWN_AT_CHECKPOINT : MPKeys.JOIN_AT_CHECKPOINT;
 		if (net._currentLobby.GetData(MPKeys.CHECKPOINT_PROTOCOL) != "1"
 			|| !bool.TryParse(net._currentLobby.GetData(rule), out var enabled) || !enabled) {
 			if (reason == CheckpointSpawnReason.DeathRespawn) _session.CompleteRespawn();
+			LastResolution = CheckpointResolution.Normal;
 			yield break;
 		}
 		CheckpointProgress own;
@@ -377,6 +384,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			}
 			if (_decision == CheckpointSpawnDecision.Normal) {
 				if (reason == CheckpointSpawnReason.DeathRespawn) _session.CompleteRespawn();
+				LastResolution = CheckpointResolution.Normal;
 				yield break;
 			}
 			if (_reply == null || CheckpointPolicy.Decide(reason, true, _reply.progress, own, _reply.nativeContinuation) != _decision) yield break;
@@ -384,6 +392,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			bool applied = false;
 			yield return GuardedApply(_reply, empty, attempt, value => applied = value);
 			if (applied && _attempt == attempt) {
+				LastResolution = CheckpointResolution.Applied;
 				_session.CompleteRespawn(_reply.progress);
 				MPCore.Instance.RefreshAfterCheckpoint();
 				MPMain.LogInfo(Localization.Get(empty ? "Checkpoint.SpawnedEmpty" : "Checkpoint.Spawned", _reply.levelName));
@@ -417,7 +426,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			var decision = CheckpointPolicy.Decide(reason, enabled, target?.progress, own, target?.nativeContinuation ?? false);
 			byte[]? snapshot = null;
 			if (decision is CheckpointSpawnDecision.HostEmpty or CheckpointSpawnDecision.HostWithOwnItems) {
-				try { snapshot = CheckpointSnapshotCodec.Encode(JsonUtility.ToJson(target)); }
+				try { snapshot = CheckpointSnapshotCodec.Encode(CheckpointSnapshotJson.Serialize(target)); }
 				catch (Exception ex) { MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message)); decision = CheckpointSpawnDecision.Normal; }
 			}
 			var writer = GetWriter(MPSteamworks.UserSteamId, sender, PacketType.CheckpointSpawn);
@@ -433,10 +442,21 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			if (decision != CheckpointSpawnDecision.Normal) {
 				if (reader.AvailableBytes < 4 || reader.AvailableBytes > CheckpointSnapshotCodec.MaxCompressedBytes + 4) return;
 				var payload = reader.GetMemory();
-				var snapshot = JsonUtility.FromJson<HostCheckpointSnapshot>(CheckpointSnapshotCodec.Decode(payload));
-				Validate(snapshot);
-				if (snapshot.lobbyId != lobby || snapshot.seed != seed || snapshot.modeSignature != signature) return;
-				_reply = snapshot;
+				try {
+					var snapshot = CheckpointSnapshotJson.Deserialize<HostCheckpointSnapshot>(CheckpointSnapshotCodec.Decode(payload));
+					Validate(snapshot);
+					if (snapshot.lobbyId != lobby || snapshot.seed != seed || snapshot.modeSignature != signature)
+						throw new InvalidDataException("Checkpoint snapshot does not match the requested lobby/run.");
+					_reply = snapshot;
+				} catch (Exception ex) {
+					// A bad authenticated response is a failed handshake, not a normal
+					// start-of-run spawn. Stop retries and keep the client unadmitted.
+					_reply = null;
+					_decision = CheckpointSpawnDecision.KeepOwnRun;
+					_receivedReply = true;
+					MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message));
+					return;
+				}
 			}
 			if (reader.AvailableBytes != 0) return;
 			_decision = decision;
@@ -490,7 +510,9 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		var asset = CL_AssetManager.GetLevelAsset(snapshot.levelName, string.Empty);
 		var region = CL_AssetManager.GetRegionAsset(snapshot.regionName, string.Empty);
 		var player = ENT_Player.GetPlayer();
-		if (asset == null || region == null || player == null) yield break;
+		if (asset == null || region == null || player == null)
+			throw new InvalidOperationException($"Checkpoint assets/player unavailable: {snapshot.levelName}, {snapshot.regionName}.");
+		MPMain.LogInfo($"[MP Checkpoint] Loading host level {snapshot.levelName} (id {snapshot.progress.levelOrdinal}, seed {snapshot.levelSeed}); aligning world before admission.");
 		IsApplying = true;
 		bool success = false;
 		try {
@@ -515,8 +537,11 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 				yield return null;
 			}
 			if (!RequestStillCurrent(attempt, snapshot)) yield break;
-			var level = WorldLoader.instance.GetCurrentLevel()?.GetLevel();
-			if (level == null || LevelId(WorldLoader.instance.GetCurrentLevel()).level != snapshot.levelName) yield break;
+			var currentInfo = WorldLoader.instance.GetCurrentLevel();
+			var level = currentInfo?.GetLevel();
+			if (level == null || LevelId(currentInfo!).level != snapshot.levelName
+				|| LevelId(currentInfo!).id != snapshot.progress.levelOrdinal)
+				throw new InvalidOperationException("Regenerated checkpoint level identity does not match the host snapshot.");
 			var root = GameObject.Find("World_Root(Clone)")?.transform;
 			if (root == null || !level.transform.IsChildOf(root)) throw new InvalidOperationException("Checkpoint world root was not found.");
 			Quaternion deltaRotation = snapshot.levelRotation * Quaternion.Inverse(level.transform.rotation);
