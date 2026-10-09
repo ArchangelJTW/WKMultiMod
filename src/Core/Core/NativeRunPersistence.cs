@@ -114,6 +114,9 @@ public static class NativeRunPersistence {
 		var saved = ReadCurrent();
 		bool continuing = SavedRunPolicy.CanHost(saved, MPSteamworks.UserSteamId, mode.seed.Value, Signature(mode));
 		string runId = continuing ? saved!.runId : Guid.NewGuid().ToString("N");
+		// Scope checkpoint/death state before restoring it; the same lobby/seed
+		// can now contain a different run after a native restart.
+		MPSteamworks.Instance.SetLobbyData(MPKeys.RUN_ID, runId);
 		if (continuing) {
 			CheckpointSyncManager.Current?.RestoreSavedRun(saved!);
 			SceneItemModule.Instance.RestoreSavedTombstones(saved!.itemTombstones);
@@ -122,7 +125,6 @@ public static class NativeRunPersistence {
 		CheckpointSyncManager.Current?.AttachNativeContinuation(_nativeContinuation);
 		var current = continuing ? saved! : Create(mode, runId, true);
 		current.wasHost = true;
-		MPSteamworks.Instance.SetLobbyData(MPKeys.RUN_ID, runId);
 		WriteCurrent(current);
 		RefreshBeforeSave();
 		MPMain.LogInfo(continuing

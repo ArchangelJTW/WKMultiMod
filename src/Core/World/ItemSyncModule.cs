@@ -119,10 +119,9 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 	/// 玩家转移队伍 刷新场景物品记录
 	/// </summary>
 	public List<SavedItemTombstones> ExportSavedTombstones() {
-		var teams = _teamTombstones.ToDictionary(pair => pair.Key, pair => new HashSet<ulong>(pair.Value));
-		if (!teams.TryGetValue(MPCore.CurrentTeam, out var current)) teams[MPCore.CurrentTeam] = current = new();
-		current.UnionWith(_sceneTombstones);
-		return teams.Select(pair => new SavedItemTombstones { team = pair.Key, ids = pair.Value.ToList() }).ToList();
+		var histories = _teamTombstones.Select(pair => new SavedItemTombstones { team = pair.Key, ids = pair.Value.ToList() }).ToList();
+		histories.Add(new SavedItemTombstones { team = MPCore.CurrentTeam, ids = _sceneTombstones.ToList() });
+		return SavedItemTombstones.Normalize(histories, MPKeys.DEFAULT_TEAM);
 	}
 
 	public void RestoreSavedTombstones(IEnumerable<SavedItemTombstones> saved) {
@@ -177,7 +176,7 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 	/// 广播物品标签删除
 	/// </summary>
 	public void NotifyLocalRemove(NetworkedItem identity) {
-		if (identity == null || !MPCore.IsReady || identity?.itemCreateType != ItemType.SceneItem) return;
+		if (identity == null || identity.networkId == 0 || !MPCore.IsReady || identity?.itemCreateType != ItemType.SceneItem) return;
 		// 遗忘物品网络ID
 		_sceneItems.Remove(identity.networkId);
 		BroadcastSceneRemove(identity);
@@ -189,7 +188,7 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 	/// 广播场景物品进行个人所有权获取
 	/// </summary>
 	public void SceneToDropped(NetworkedItem identity) {
-		if (identity == null || !MPCore.IsReady || identity?.itemCreateType != ItemType.SceneItem) return;
+		if (identity == null || identity.networkId == 0 || !MPCore.IsReady || identity?.itemCreateType != ItemType.SceneItem) return;
 		// 遗忘物品网络ID
 		_sceneItems.Remove(identity.networkId);
 		DroppedItemModule.Instance.ConvertFromScene(identity, MPSteamworks.UserSteamId, true);
@@ -213,7 +212,7 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 			return 0;
 
 		var identity = itemObject.GetComponent<NetworkedItem>();
-		if (identity != null && identity.itemCreateType == ItemType.SceneItem)
+		if (identity != null && identity.itemCreateType == ItemType.SceneItem && identity.networkId != 0)
 			return identity.networkId;
 
 		string path = MPUtil.BuildTransformPath(itemObject.transform);
@@ -229,6 +228,7 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 	/// 接收函数: <see cref="HandleSceneRemove"/>
 	/// </summary>
 	private void BroadcastSceneRemove(NetworkedItem identity) {
+		if (identity == null || identity.networkId == 0) return;
 		var writer = GetWriter(MPSteamworks.UserSteamId, MPProtocol.BroadcastId, PacketType.SceneItemSync);
 		writer.Put((byte)SceneItemSyncAction.Remove);
 		writer.Put(identity.networkId);
@@ -337,9 +337,11 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 	/// </summary>
 	public void HandleSceneRemove(IDType senderId, DataReader reader) {
 		var networkId = reader.GetULong();
+		if (networkId == 0) return;
 		// 是主机 记录该玩家所在队伍的销毁项
 		if (MPSteamworks.IsHost) {
 			var teamName = RPManager.Instance.GetPlayerTeam(senderId);
+			if (string.IsNullOrWhiteSpace(teamName)) teamName = MPKeys.DEFAULT_TEAM;
 			if (!_teamTombstones.TryGetValue(teamName, out var tombstones)) {
 				tombstones = new HashSet<ulong>();
 				_teamTombstones[teamName] = tombstones;
@@ -405,6 +407,7 @@ public class SceneItemModule : Singleton<SceneItemModule>, ISyncModule {
 		// 是主机 记录该玩家所在队伍的销毁项
 		if (MPSteamworks.IsHost) {
 			var teamName = RPManager.Instance.GetPlayerTeam(senderId);
+			if (string.IsNullOrWhiteSpace(teamName)) teamName = MPKeys.DEFAULT_TEAM;
 			if (!_teamTombstones.TryGetValue(teamName, out var tombstones)) {
 				tombstones = new HashSet<ulong>();
 				_teamTombstones[teamName] = tombstones;

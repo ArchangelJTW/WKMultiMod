@@ -3,7 +3,12 @@ using System;
 namespace WKMPMod.Core;
 
 public enum CheckpointSpawnReason : byte { LateJoin = 0, DeathRespawn = 1, LiveReconnect = 2 }
-public enum CheckpointSpawnDecision : byte { Normal = 0, KeepOwnRun = 1, HostWithOwnItems = 2, HostEmpty = 3 }
+public enum CheckpointSpawnDecision : byte { Normal = 0, KeepOwnRun = 1, HostWithOwnItems = 2, HostEmpty = 3, Failed = 4 }
+public enum CheckpointDecisionReason : byte {
+	LiveReconnect, Disabled, NoHostCheckpoint, InvalidHostProgress, UnreachedHostPoint,
+	InvalidOwnProgress, DifferentRoutes, LateJoin, NativeContinuationLateJoin,
+	NativeContinuationNotForDeath, HostNotLater, HostLaterAfterDeath, UnsupportedReason, SnapshotEncodingFailed
+}
 
 [Serializable]
 public sealed class CheckpointProgress {
@@ -32,16 +37,28 @@ public static class CheckpointPolicy {
 	}
 
 	public static CheckpointSpawnDecision Decide(CheckpointSpawnReason reason, bool enabled,
-		CheckpointProgress? host, CheckpointProgress? own, bool nativeContinuation = false) {
-		if (reason == CheckpointSpawnReason.LiveReconnect) return CheckpointSpawnDecision.KeepOwnRun;
-		if (!enabled || !IsValid(host) || (!host!.reached && !nativeContinuation) || !IsValid(own)
-			|| !string.Equals(host.route, own!.route, StringComparison.Ordinal)) return CheckpointSpawnDecision.Normal;
-		if (reason == CheckpointSpawnReason.LateJoin) return CheckpointSpawnDecision.HostWithOwnItems;
+		CheckpointProgress? host, CheckpointProgress? own, bool nativeContinuation = false) =>
+		Evaluate(reason, enabled, host, own, nativeContinuation).Decision;
+
+	/// <summary>Keep the normal-spawn reason observable instead of hiding all fallback paths behind one byte.</summary>
+	public static (CheckpointSpawnDecision Decision, CheckpointDecisionReason Reason) Evaluate(CheckpointSpawnReason reason,
+		bool enabled, CheckpointProgress? host, CheckpointProgress? own, bool nativeContinuation = false) {
+		if (reason == CheckpointSpawnReason.LiveReconnect) return (CheckpointSpawnDecision.KeepOwnRun, CheckpointDecisionReason.LiveReconnect);
+		if (!enabled) return (CheckpointSpawnDecision.Normal, CheckpointDecisionReason.Disabled);
+		if (host == null) return (CheckpointSpawnDecision.Normal, CheckpointDecisionReason.NoHostCheckpoint);
+		if (!IsValid(host)) return (CheckpointSpawnDecision.Failed, CheckpointDecisionReason.InvalidHostProgress);
+		if (!host.reached && !nativeContinuation) return (CheckpointSpawnDecision.Normal, CheckpointDecisionReason.UnreachedHostPoint);
+		if (!IsValid(own)) return (CheckpointSpawnDecision.Failed, CheckpointDecisionReason.InvalidOwnProgress);
+		if (!string.Equals(host.route, own!.route, StringComparison.Ordinal))
+			return (CheckpointSpawnDecision.Normal, CheckpointDecisionReason.DifferentRoutes);
+		if (reason == CheckpointSpawnReason.LateJoin) return (CheckpointSpawnDecision.HostWithOwnItems,
+			nativeContinuation ? CheckpointDecisionReason.NativeContinuationLateJoin : CheckpointDecisionReason.LateJoin);
 		// A native Continue point may help late joiners resume a legacy save, but
 		// must never masquerade as a later reached checkpoint for the death rule.
-		if (nativeContinuation) return CheckpointSpawnDecision.Normal;
-		if (reason == CheckpointSpawnReason.DeathRespawn && IsLater(host, own)) return CheckpointSpawnDecision.HostEmpty;
-		return CheckpointSpawnDecision.Normal;
+		if (nativeContinuation) return (CheckpointSpawnDecision.Normal, CheckpointDecisionReason.NativeContinuationNotForDeath);
+		if (reason != CheckpointSpawnReason.DeathRespawn) return (CheckpointSpawnDecision.Failed, CheckpointDecisionReason.UnsupportedReason);
+		return IsLater(host, own) ? (CheckpointSpawnDecision.HostEmpty, CheckpointDecisionReason.HostLaterAfterDeath)
+			: (CheckpointSpawnDecision.Normal, CheckpointDecisionReason.HostNotLater);
 	}
 }
 
@@ -49,15 +66,17 @@ public static class CheckpointPolicy {
 public sealed class CheckpointSessionState {
 	public ulong LobbyId { get; private set; }
 	public int Seed { get; private set; }
+	public string RunId { get; private set; } = string.Empty;
 	public string ModeSignature { get; private set; } = string.Empty;
 	public CheckpointProgress? LocalCheckpoint { get; private set; }
 	public CheckpointProgress? DeathCheckpoint { get; private set; }
 	public bool PendingDeath { get; private set; }
 
-	public void Bind(ulong lobbyId, int seed, string signature) {
-		if (lobbyId == 0 || string.IsNullOrWhiteSpace(signature)) throw new ArgumentException("Invalid checkpoint session.");
-		if (LobbyId == lobbyId && Seed == seed && ModeSignature == signature) return;
-		LobbyId = lobbyId; Seed = seed; ModeSignature = signature;
+	public void Bind(ulong lobbyId, int seed, string signature, string runId = "") {
+		if (lobbyId == 0 || string.IsNullOrWhiteSpace(signature) || runId == null
+			|| (runId.Length != 0 && !SavedRunPolicy.IsRunId(runId))) throw new ArgumentException("Invalid checkpoint session.");
+		if (Matches(lobbyId, seed, signature, runId)) return;
+		LobbyId = lobbyId; Seed = seed; ModeSignature = signature; RunId = runId;
 		LocalCheckpoint = null; DeathCheckpoint = null; PendingDeath = false;
 	}
 
@@ -88,6 +107,6 @@ public sealed class CheckpointSessionState {
 		DeathCheckpoint = null;
 	}
 
-	public bool Matches(ulong lobbyId, int seed, string signature) =>
-		LobbyId == lobbyId && Seed == seed && ModeSignature == signature;
+	public bool Matches(ulong lobbyId, int seed, string signature, string runId = "") =>
+		LobbyId == lobbyId && Seed == seed && ModeSignature == signature && RunId == runId;
 }

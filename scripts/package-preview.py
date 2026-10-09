@@ -47,7 +47,8 @@ Source: https://github.com/ArchangelJTW/WKMultiMod/tree/dev
 
 TEST BUILD: compiles and has automated policy tests, but still needs a
 real two-player Unity/Steam test. Use a disposable run and back up saves.
-Both players must use this same build.
+Both players must use this same build. Checkpoint protocol 2 includes the
+persistent run ID; do not mix 1.8.3.5 and 1.8.3.6 checkpoint peers.
 
 INSTALL (requires the working BepInEx installation you already use):
 1. Completely close White Knuckle.
@@ -76,6 +77,11 @@ WHAT TO TEST:
 - Resumed interlude: the guest must load the host's actual interlude terrain,
   not appear nearby in the first area. Look for Loading host level and Joined
   at checkpoint messages. Failed placement now refuses multiplayer admission.
+- Logs now say which join path ran and why the host chose Normal instead
+  of checkpoint placement (no checkpoint, different route, not later, disabled).
+- New host run in the SAME lobby/seed: old-world syncing must stop; reconnect
+  must not reuse a prior run's world, checkpoint or pending-death state.
+- Save metadata: no Invalid saved item history warnings after ordinary pickups.
 - Live reconnect: keep your own position and inventory after network recovery.
 - Death/restart or death/rejoin: if the host has a later checkpoint on the
   same route, spawn there with empty hands/bag/pouches/pockets/artifacts.

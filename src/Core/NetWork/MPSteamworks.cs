@@ -1115,7 +1115,7 @@ public class MPSteamworks : MonoSingleton<MPSteamworks>, ISocketManager {
 		dict[MPKeys.GAME_KEY] = MPKeys.GAME_VALUE;
 		dict[MPKeys.VERSION] = Application.version;
 		dict[MPKeys.MOD_VERSION] = MPMain.PLUGIN_VERSION;
-		dict[MPKeys.CHECKPOINT_PROTOCOL] = "1";
+		dict[MPKeys.CHECKPOINT_PROTOCOL] = CheckpointSyncManager.LobbyProtocol;
 		dict[MPKeys.JOIN_AT_CHECKPOINT] = MPConfig.JoinAtHostCheckpoint.ToString();
 		dict[MPKeys.RESPAWN_AT_CHECKPOINT] = MPConfig.RespawnAtHostCheckpoint.ToString();
 		dict[MPKeys.OWNER_NAME] = UserSteamId.ToString();

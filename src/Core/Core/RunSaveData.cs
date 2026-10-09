@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace WKMPMod.Core;
 
@@ -35,6 +36,18 @@ public sealed class SavedLevelAnchor {
 public sealed class SavedItemTombstones {
 	public string team = string.Empty;
 	public List<ulong> ids = new();
+
+	/// <summary>Zero denotes an unassigned identity, never a real deletion. Merge unknown teams into the default.</summary>
+	public static List<SavedItemTombstones> Normalize(IEnumerable<SavedItemTombstones> source, string defaultTeam) {
+		if (string.IsNullOrWhiteSpace(defaultTeam)) throw new ArgumentException("A default team is required.", nameof(defaultTeam));
+		var teams = new Dictionary<string, HashSet<ulong>>(StringComparer.Ordinal);
+		foreach (var saved in source) {
+			string team = string.IsNullOrWhiteSpace(saved.team) ? defaultTeam : saved.team;
+			if (!teams.TryGetValue(team, out var ids)) teams[team] = ids = new();
+			ids.UnionWith(saved.ids.Where(id => id != 0));
+		}
+		return teams.Select(pair => new SavedItemTombstones { team = pair.Key, ids = pair.Value.OrderBy(id => id).ToList() }).ToList();
+	}
 }
 
 [Serializable]

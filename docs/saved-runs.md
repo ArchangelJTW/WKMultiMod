@@ -1,4 +1,4 @@
-# Next-day multiplayer continuation — preview 1.8.3.5
+# Next-day multiplayer continuation — preview 1.8.3.6
 
 **Implemented/build-tested; still requires a real two-player save/quit/relaunch test.**
 Use save backups and a disposable run first. Both players must use this build.
@@ -57,6 +57,13 @@ rule. Once the host reaches an actual checkpoint, that checkpoint takes priority
 
 ## Implementation and safety
 
+- Checkpoint protocol 2 includes the persistent run ID in requests/replies.
+  Reusing a Steam lobby and seed after a new/reloaded run cannot reuse another
+  run's live reconnect ticket or checkpoint/death state. Both peers must update.
+- Scene-item histories discard unassigned zero IDs and merge unknown teams into
+  the default team when exporting. Zero-ID removals are ignored on send/receive.
+  This fixes the `Invalid saved item history` path observed in the 1.8.3.5 host
+  log; strict identity, bounds and metadata decoding validation remain in place.
 - The 1.8.3.4 Unity checkpoint JSON omitted nested `progress`; 1.8.3.5 uses an
   explicit public-field contract and checks a complete serialization round trip.
   Locally owned, identity-validated 1.8.3.4 save geometry can recover that field

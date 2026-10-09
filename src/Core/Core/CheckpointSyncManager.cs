@@ -42,6 +42,8 @@ public sealed class HostCheckpointSnapshot {
 }
 
 public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager> {
+	public const byte ProtocolVersion = 2;
+	public const string LobbyProtocol = "2";
 	public static CheckpointSyncManager? Current { get; private set; }
 	public static bool IsApplying { get; private set; }
 	public bool HasPendingDeath => _session.PendingDeath;
@@ -85,13 +87,16 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		if (mode != LoadSceneMode.Single) return;
 		_sceneRevision++;
 		CancelRequest();
-		// Keep a death tombstone across the menu/restart, scoped to its old lobby/run.
+		_hostCheckpoint = null;
+		_hostContinuation = null;
+		// Loaded transforms/geometry cannot survive a scene generation. Keep only
+		// the guest's death tombstone, which BindCurrentSession now scopes to RunId.
 	}
 
 	private void Update() {
 		if (!Ready() || !BindCurrentSession()) return;
 		if (_session.PendingDeath && !MPSteamworks.IsHost && !_resolving && !_autoDeathAttempt
-			&& MPCore.IsInitialized && Time.unscaledTime >= _nextDeathRetry) {
+			&& MPCore.IsReady && Time.unscaledTime >= _nextDeathRetry) {
 			_nextDeathRetry = Time.unscaledTime + 5f;
 			_autoDeathAttempt = true;
 			StartCoroutine(AutomaticDeathSpawn());
@@ -113,8 +118,12 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		if (data?.seed == null || WorldLoader.instance == null || data.seed.Value != WorldLoader.instance.seed) return false;
 		string signature = Signature(data);
 		ulong lobby = MPSteamworks.Instance.LobbyId;
-		if (!_session.Matches(lobby, data.seed.Value, signature)) {
-			_session.Bind(lobby, data.seed.Value, signature);
+		string runId = MPSteamworks.Instance._currentLobby.GetData(MPKeys.RUN_ID);
+		if (!SavedRunPolicy.IsRunId(runId)) return false;
+		if (!_session.Matches(lobby, data.seed.Value, signature, runId)) {
+			MPMain.LogInfo($"[MP Checkpoint] Binding run {runId}; clearing checkpoint/death state from the previous run.");
+			if (_request != null) CancelRequest();
+			_session.Bind(lobby, data.seed.Value, signature, runId);
 			_hostCheckpoint = null;
 			_hostContinuation = null;
 			_requestTimes.Clear();
@@ -179,6 +188,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			Validate(snapshot);
 			_hostCheckpoint = snapshot;
 			MPMain.LogInfo(Localization.Get("Checkpoint.Captured", savedLevel.levelName, mark.levelOrdinal));
+			NativeRunPersistence.RefreshBeforeSave();
 		} catch (Exception ex) {
 			MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message));
 		}
@@ -257,7 +267,8 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 
 	/// <summary>Serialize checkpoint geometry relative to the native save's level, never a world-space spawn guess.</summary>
 	public void ExportSavedRun(RunSaveData save, SavedLevelAnchor? anchor) {
-		if (_session.Seed != save.seed || _session.ModeSignature != save.modeSignature || !SavedRunPolicy.IsValidAnchor(anchor)) return;
+		if (_session.Seed != save.seed || _session.ModeSignature != save.modeSignature || _session.RunId != save.runId
+			|| !SavedRunPolicy.IsValidAnchor(anchor)) return;
 		save.checkpoint = _session.LocalCheckpoint?.Copy();
 		save.deathCheckpoint = _session.DeathCheckpoint?.Copy();
 		save.pendingDeath = _session.PendingDeath;
@@ -275,7 +286,8 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 	}
 
 	public void RestoreSavedRun(RunSaveData save) {
-		if (!Ready() || !BindCurrentSession() || _session.Seed != save.seed || _session.ModeSignature != save.modeSignature) return;
+		if (!Ready() || !BindCurrentSession() || _session.Seed != save.seed || _session.ModeSignature != save.modeSignature
+			|| _session.RunId != save.runId) return;
 		try {
 			var anchorInfo = FindLoadedSaveAnchor(save.worldAnchor);
 			string? route = anchorInfo?.branch != null ? Route(anchorInfo.branch) : null;
@@ -339,6 +351,10 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 	public IEnumerator ResolveSpawn(CheckpointSpawnReason reason) {
 		if (_resolving) yield break;
 		LastResolution = CheckpointResolution.Failed;
+		if (SceneManager.GetActiveScene().name == "Playground" && MPCore.IsInLobby) {
+			LastResolution = CheckpointResolution.Normal;
+			yield break; // Playground has no generated campaign checkpoint world.
+		}
 		if (!Ready() || !BindCurrentSession()) yield break;
 		if (_session.PendingDeath) reason = CheckpointSpawnReason.DeathRespawn;
 		SkipJoinCommands = reason == CheckpointSpawnReason.DeathRespawn;
@@ -348,10 +364,15 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		}
 		var net = MPSteamworks.Instance;
 		string rule = reason == CheckpointSpawnReason.DeathRespawn ? MPKeys.RESPAWN_AT_CHECKPOINT : MPKeys.JOIN_AT_CHECKPOINT;
-		if (net._currentLobby.GetData(MPKeys.CHECKPOINT_PROTOCOL) != "1"
-			|| !bool.TryParse(net._currentLobby.GetData(rule), out var enabled) || !enabled) {
+		string protocol = net._currentLobby.GetData(MPKeys.CHECKPOINT_PROTOCOL);
+		if (!bool.TryParse(net._currentLobby.GetData(rule), out var enabled) || !enabled) {
+			MPMain.LogInfo($"[MP Checkpoint] {reason}: checkpoint rule disabled; keeping normal spawn.");
 			if (reason == CheckpointSpawnReason.DeathRespawn) _session.CompleteRespawn();
 			LastResolution = CheckpointResolution.Normal;
+			yield break;
+		}
+		if (protocol != LobbyProtocol) {
+			MPMain.LogWarning($"[MP Checkpoint] Host protocol '{protocol}' cannot provide a run-scoped checkpoint reply; both players must update. Refusing normal-spawn fallback.");
 			yield break;
 		}
 		CheckpointProgress own;
@@ -360,24 +381,27 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		_resolving = true;
 		ulong attempt = ++_attempt;
 		_request = new CheckpointRequestScope(attempt, net.LobbyId, net.HostSteamId,
-			_session.Seed, _sceneRevision, _session.ModeSignature);
+			_session.Seed, _sceneRevision, _session.ModeSignature, _session.RunId);
+		MPMain.LogInfo($"[MP Checkpoint] Requesting {reason} for run {_session.RunId}; own route={own.route}, level={own.levelOrdinal}, distance={own.travelDistance}, pendingDeath={_session.PendingDeath}.");
 		_reply = null;
 		_receivedReply = false;
 		float deadline = Time.unscaledTime + 30f;
 		float nextSend = -1f;
 		try {
 			while (!_receivedReply && _request != null && _attempt == attempt && Ready()
-				&& net.LobbyId == _request.LobbyId && Time.unscaledTime < deadline) {
+				&& net.LobbyId == _request.LobbyId && net._currentLobby.GetData(MPKeys.RUN_ID) == _request.RunId
+				&& Time.unscaledTime < deadline) {
 				if (net.IsConnectedTo(_request.HostId) && Time.unscaledTime >= nextSend) {
 					nextSend = Time.unscaledTime + 2f;
 					var writer = GetWriter(MPSteamworks.UserSteamId, _request.HostId, PacketType.CheckpointSpawn);
-					writer.Put((byte)1).Put(false).Put(attempt).Put(_request.LobbyId).Put(_request.Seed)
-						.Put(_request.ModeSignature).Put((byte)reason).Put(JsonConvert.SerializeObject(own));
+					writer.Put(ProtocolVersion).Put(false).Put(attempt).Put(_request.LobbyId).Put(_request.Seed)
+						.Put(_request.ModeSignature).Put(_request.RunId).Put((byte)reason).Put(JsonConvert.SerializeObject(own));
 					net.SendToHost(writer);
 				}
 				yield return null;
 			}
-			if (_attempt != attempt || _request == null || !Ready()) yield break;
+			if (_attempt != attempt || _request == null || !Ready()
+				|| net._currentLobby.GetData(MPKeys.RUN_ID) != _request.RunId) yield break;
 			if (!_receivedReply) {
 				MPMain.LogWarning(Localization.Get("Checkpoint.Timeout"));
 				yield break; // Keep a death tombstone; retry rather than treating it as an alive reconnect.
@@ -404,17 +428,19 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 	}
 
 	public void HandlePacket(ulong sender, DataReader reader) {
-		if (reader.AvailableBytes < 22 || reader.GetByte() != 1) return;
+		if (reader.AvailableBytes < 22 || reader.GetByte() != ProtocolVersion) return;
 		bool response = reader.GetBool();
 		ulong attempt = reader.GetULong();
 		ulong lobby = reader.GetULong();
 		int seed = reader.GetInt();
 		if (reader.AvailableBytes < 4) return;
 		string signature = reader.GetString();
-		if (signature.Length != 64) return;
+		if (signature.Length != 64 || reader.AvailableBytes < 4) return;
+		string runId = reader.GetString();
+		if (!SavedRunPolicy.IsRunId(runId)) return;
 		if (!response) {
-			if (!Ready() || !BindCurrentSession() || !MPSteamworks.IsHost || attempt == 0
-				|| !MPSteamworks.Instance.IsMemberInLobby(sender) || !_session.Matches(lobby, seed, signature)) return;
+			if (!Ready() || !BindCurrentSession() || !MPSteamworks.IsHost || !MPCore.IsReady || attempt == 0
+				|| !MPSteamworks.Instance.IsMemberInLobby(sender) || !_session.Matches(lobby, seed, signature, runId)) return;
 			if (_requestTimes.TryGetValue(sender, out var last) && Time.unscaledTime - last < 0.5f) return;
 			_requestTimes[sender] = Time.unscaledTime;
 			var reason = (CheckpointSpawnReason)reader.GetByte();
@@ -423,23 +449,35 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 			var own = JsonConvert.DeserializeObject<CheckpointProgress>(ownJson);
 			bool enabled = reason == CheckpointSpawnReason.LateJoin ? MPConfig.JoinAtHostCheckpoint : MPConfig.RespawnAtHostCheckpoint;
 			var target = _hostCheckpoint ?? (reason == CheckpointSpawnReason.LateJoin ? _hostContinuation : null);
-			var decision = CheckpointPolicy.Decide(reason, enabled, target?.progress, own, target?.nativeContinuation ?? false);
+			var choice = CheckpointPolicy.Evaluate(reason, enabled, target?.progress, own, target?.nativeContinuation ?? false);
+			var decision = choice.Decision;
+			var replyReason = choice.Reason;
 			byte[]? snapshot = null;
 			if (decision is CheckpointSpawnDecision.HostEmpty or CheckpointSpawnDecision.HostWithOwnItems) {
 				try { snapshot = CheckpointSnapshotCodec.Encode(CheckpointSnapshotJson.Serialize(target)); }
-				catch (Exception ex) { MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message)); decision = CheckpointSpawnDecision.Normal; }
+				catch (Exception ex) {
+					MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message));
+					decision = CheckpointSpawnDecision.Failed;
+					replyReason = CheckpointDecisionReason.SnapshotEncodingFailed;
+				}
 			}
+			MPMain.LogInfo($"[MP Checkpoint] Host reply: request={reason}, decision={decision}, reason={replyReason}, run={runId}; target={target?.levelName ?? "none"}, route={target?.progress.route ?? "none"}, level={target?.progress.levelOrdinal}, distance={target?.progress.travelDistance}; guest route={own?.route}, level={own?.levelOrdinal}, distance={own?.travelDistance}.");
 			var writer = GetWriter(MPSteamworks.UserSteamId, sender, PacketType.CheckpointSpawn);
-			writer.Put((byte)1).Put(true).Put(attempt).Put(lobby).Put(seed).Put(signature).Put((byte)decision);
+			writer.Put(ProtocolVersion).Put(true).Put(attempt).Put(lobby).Put(seed).Put(signature).Put(runId)
+				.Put((byte)decision).Put((byte)replyReason);
 			if (snapshot != null) writer.Put(snapshot.AsSpan());
 			MPSteamworks.Instance.SendToPeer(sender, writer);
 		} else {
 			var net = MPSteamworks.Instance;
 			if (_request == null || !_request.Accepts(sender, attempt, lobby, seed, signature,
-				net.LobbyId, net.HostSteamId, _sceneRevision) || _receivedReply || !Ready()) return;
+				net.LobbyId, net.HostSteamId, _sceneRevision, runId, net._currentLobby.GetData(MPKeys.RUN_ID))
+				|| _receivedReply || !Ready() || reader.AvailableBytes < 2) return;
 			var decision = (CheckpointSpawnDecision)reader.GetByte();
-			if (decision is not (CheckpointSpawnDecision.Normal or CheckpointSpawnDecision.HostEmpty or CheckpointSpawnDecision.HostWithOwnItems)) return;
-			if (decision != CheckpointSpawnDecision.Normal) {
+			var replyReason = (CheckpointDecisionReason)reader.GetByte();
+			if (decision is not (CheckpointSpawnDecision.Normal or CheckpointSpawnDecision.HostEmpty
+				or CheckpointSpawnDecision.HostWithOwnItems or CheckpointSpawnDecision.Failed)
+				|| !Enum.IsDefined(typeof(CheckpointDecisionReason), replyReason)) return;
+			if (decision is CheckpointSpawnDecision.HostEmpty or CheckpointSpawnDecision.HostWithOwnItems) {
 				if (reader.AvailableBytes < 4 || reader.AvailableBytes > CheckpointSnapshotCodec.MaxCompressedBytes + 4) return;
 				var payload = reader.GetMemory();
 				try {
@@ -452,13 +490,14 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 					// A bad authenticated response is a failed handshake, not a normal
 					// start-of-run spawn. Stop retries and keep the client unadmitted.
 					_reply = null;
-					_decision = CheckpointSpawnDecision.KeepOwnRun;
+					_decision = CheckpointSpawnDecision.Failed;
 					_receivedReply = true;
 					MPMain.LogWarning(Localization.Get("Checkpoint.Failed", ex.Message));
 					return;
 				}
 			}
 			if (reader.AvailableBytes != 0) return;
+			MPMain.LogInfo($"[MP Checkpoint] Host response: decision={decision}, reason={replyReason}, run={runId}; target={_reply?.levelName ?? "none"}.");
 			_decision = decision;
 			_receivedReply = true;
 		}
@@ -583,6 +622,7 @@ public sealed class CheckpointSyncManager : MonoSingleton<CheckpointSyncManager>
 		_request != null && _attempt == attempt && _request.WorldRevision == _sceneRevision
 		&& MPSteamworks.Instance.LobbyId == snapshot.lobbyId
 		&& MPSteamworks.Instance.HostSteamId == _request.HostId
+		&& MPSteamworks.Instance._currentLobby.GetData(MPKeys.RUN_ID) == _request.RunId
 		&& MPGameModeManager.CurrentData != null && Signature(MPGameModeManager.CurrentData) == snapshot.modeSignature
 		&& WorldLoader.instance != null && WorldLoader.instance.seed == snapshot.seed
 		&& ENT_Player.GetPlayer() != null && !ENT_Player.GetPlayer().IsDead();

@@ -110,6 +110,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	public static bool IsInLobby => MultiPlayerStatus.IsInLobby();
 	public static bool IsInitialized => MultiPlayerStatus.IsInitialized();
 	public static bool IsReady => MultiPlayerStatus.IsReady() && WorldAdmission.IsReady
+		&& WorldAdmission.IsReadyFor(MPSteamworks.Instance._currentLobby.GetData(MPKeys.RUN_ID))
 		&& !CheckpointSyncManager.IsApplying;
 
 	// 是否满足同步条件(处于大厅中且已初始化且有连接)
@@ -175,6 +176,11 @@ public class MPCore : MonoSingleton<MPCore> {
 
 	void Update() {
 		NativeRunPersistence.ObserveNativeWorld();
+		if (WorldAdmission.IsReady && IsInLobby && _MPSteamworks != null && _MPSteamworks.IsInLobby
+			&& !MPSteamworks.IsHost && !WorldAdmission.IsReadyFor(_MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID))) {
+			MPMain.LogWarning("[MP Join] Host changed the run ID. Blocking sync/save stamping in the old loaded world; use reconnect to join the new run.");
+			WorldAdmission.Begin();
+		}
 		if (_LocalPlayer != null) _LocalPlayer.ShouldSendData = CanSync && IsWorldReady();
 		if (!IsReady) return;
 		if (!_resumeState.HasSession || _resumeState.WorldRevision != _worldRevision)
@@ -359,6 +365,7 @@ public class MPCore : MonoSingleton<MPCore> {
 	/// </summary>
 	private void OnSceneLoaded(Scene scene, LoadSceneMode mode) {
 		_worldRevision++;
+		if (MPSteamworks.IsHost) WorldAdmission.Begin();
 		StopHostInitialization();
 		NativeRunPersistence.SceneChanged(scene.name);
 		ClearResumeState();
@@ -440,12 +447,15 @@ public class MPCore : MonoSingleton<MPCore> {
 			&& (scene == "Playground" || (WorldLoader.instance != null && WorldLoader.isLoaded));
 	}
 
-	private void RememberLoadedSession() {
+	private void RememberLoadedSession(string? runId = null) {
 		if (!IsReady || !IsInLobby || _MPSteamworks == null || !_MPSteamworks.IsInLobby
 			|| MPSteamworks.IsHost || CurrentData == null || !IsWorldReady()
 			|| CheckpointSyncManager.IsApplying || (_CheckpointSync?.HasPendingDeath ?? false)) return;
 		_resumeMode = CurrentData;
-		_resumeState.Remember(_MPSteamworks.LobbyId, JsonConvert.SerializeObject(CurrentData), _worldRevision);
+		// Admission records which run actually loaded, not whichever run the host
+		// advertises later while this player is still in the old world.
+		string loadedRunId = runId ?? WorldAdmission.RunId;
+		_resumeState.Remember(_MPSteamworks.LobbyId, JsonConvert.SerializeObject(CurrentData), _worldRevision, loadedRunId);
 	}
 
 	private bool CanKeepLoadedWorld() {
@@ -473,7 +483,8 @@ public class MPCore : MonoSingleton<MPCore> {
 
 	private bool TryResumeLoadedWorld(GameModeData data) {
 		if (!CanKeepLoadedWorld() || !_resumeState.CanResume(
-			_MPSteamworks.LobbyId, JsonConvert.SerializeObject(data), _worldRevision)) return false;
+			_MPSteamworks.LobbyId, JsonConvert.SerializeObject(data), _worldRevision,
+			_MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID))) return false;
 		MPGameModeManager.ResumeLoadedGameMode(data);
 		_LocalPlayer.CachePlayerReferences();
 		_LocalPlayer.RefreshForConnection();
@@ -1923,7 +1934,7 @@ public class MPCore : MonoSingleton<MPCore> {
 				ChangeRPFactoryId();
 				joinedMemberData();
 				if (data.seed.HasValue) NativeRunPersistence.BindHost(data);
-				WorldAdmission.Complete(CheckpointResolution.Normal);
+				WorldAdmission.Complete(CheckpointResolution.Normal, _MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID));
 				if (data.seed.HasValue) NativeRunPersistence.RefreshBeforeSave();
 				_WorldSyncManager.RebindAfterCheckpointLoad();
 				_LocalPlayer.CachePlayerReferences();
@@ -1977,6 +1988,7 @@ public class MPCore : MonoSingleton<MPCore> {
 				bool resumed = TryResumeLoadedWorld(data);
 				string runId = _MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID);
 				bool continuedSave = !resumed && NativeRunPersistence.TryUseLoadedClientSave(data, runId);
+				MPMain.LogInfo($"[MP Join] Run={runId}; liveReconnect={resumed}, loadedNativeSave={continuedSave}.");
 				if (!resumed) {
 					ClearResumeState();
 					_WorldSyncManager.LeaveAll();
@@ -1998,19 +2010,21 @@ public class MPCore : MonoSingleton<MPCore> {
 				}
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
 				if (continuedSave) continuedSave = NativeRunPersistence.RestoreClientProgress(data, runId);
-				var resolution = CheckpointResolution.Normal;
+				var resolution = resumed ? CheckpointResolution.Normal : CheckpointResolution.Failed;
 				if (!resumed && _CheckpointSync != null) {
 					while (_CheckpointSync.IsResolving && IsInLobby && _MPSteamworks.LobbyId == lobbyId) yield return null;
 					yield return _CheckpointSync.ResolveSpawn(CheckpointSpawnReason.LateJoin);
 					resolution = _CheckpointSync.LastResolution;
 				}
 				if (!IsInLobby || _MPSteamworks.LobbyId != lobbyId) yield break;
-				if (!WorldAdmission.Complete(resolution)) {
+				if (_MPSteamworks._currentLobby.GetData(MPKeys.RUN_ID) != runId) resolution = CheckpointResolution.Failed;
+				if (!WorldAdmission.Complete(resolution, runId)) {
 					MPMain.LogError("[MP Checkpoint] Join failed: host checkpoint placement did not complete. Refusing player/world sync in an unrelated starting world. Update both players and rejoin; the host's save is unchanged.");
 					ResetStateVariables();
 					yield break;
 				}
-				RememberLoadedSession();
+				MPMain.LogInfo($"[MP Join] Admitted run {runId}; checkpoint resolution={resolution}.");
+				RememberLoadedSession(runId);
 				_LocalPlayer.CachePlayerReferences();
 				_LocalPlayer.RefreshForConnection();
 				_WorldSyncManager.RebindAfterCheckpointLoad();

@@ -1,10 +1,13 @@
-# Reconnect, checkpoint and native-save preview — 1.8.3.5
+# Reconnect, checkpoint and native-save preview — 1.8.3.6
 
 Based on upstream `dev` commit `af7e782555f96ec72e4775df623299079c46d786`.
 Uses the unchanged working 1.8.3 resources in `resources/1.8.3/`.
 
 **Implemented and build-tested; not yet validated in the game with two players.**
-Both computers should install the preview. Never load it alongside another copy
+Both computers must install 1.8.3.6: checkpoint protocol 2 now carries the
+persistent run ID and a decision reason. Mixing it with 1.8.3.5 checkpoint hosts
+is refused rather than silently falling back to normal spawn.
+Never load it alongside another copy
 of the multiplayer DLLs. The installed game files are not modified by building.
 
 **Next-day multiplayer continuation:** see [saved-runs.md](saved-runs.md) for
@@ -49,6 +52,22 @@ lobby. Old hosts without this protocol fall back to normal initialization.
 
 ## Checkpoint implementation
 
+- Scopes death/checkpoint state, live reconnect tickets, admission and network
+  request/reply to the persistent run ID, not only Steam lobby/seed/mode. The
+  paired 1.8.3.5 logs showed a new run ID after a host death/reload in the same
+  lobby/seed; old death/branch state and cached old worlds must not carry over.
+- Logs the join path and full host/client checkpoint decision, including
+  `NoHostCheckpoint`, `DifferentRoutes`, `HostNotLater`, disabled rules and
+  snapshot encoding failures. The prior logs showed real interlude captures
+  but did not log why later joins were accepted as normal spawn.
+- Refuses failed encoding/invalid progress as `Failed`, not `Normal`.
+- Clears stale live host geometry on scene generation; restores valid saved
+  geometry after binding the new/current run identity. Automatic death retry
+  cannot race an unadmitted client's initial checkpoint handshake.
+- Ignores unassigned zero-ID item removals, normalizes unknown/empty teams,
+  and filters invalid zero IDs when exporting local deletion history. This
+  addresses `Invalid saved item history` warnings in the host's 1.8.3.5 log,
+  without weakening the saved metadata decoder.
 - Uses an explicit public-field Newtonsoft JSON contract for checkpoint
   serialization/cloning/save geometry. In the 1.8.3.4 in-game interlude packet,
   Unity JsonUtility omitted nested `progress`, causing repeated validation
@@ -131,7 +150,9 @@ On this workstation only .NET 10 is installed, so run the net8 tests with:
 DOTNET_ROLL_FORWARD=Major dotnet test tests/Progress.Tests/Progress.Tests.csproj -c Release
 ```
 
-The 118 tests cover checkpoint JSON/clone/compression field preservation and
+The 140 tests cover run-ID changes in the same lobby/seed, stale-run responses
+and cached worlds, zero-ID/unknown-team deletion history normalization,
+checkpoint decision reasons, JSON/clone/compression field preservation and
 failed/successful world admission, entry callback/result ordering, live resume tickets,
 native-handle close matching, persistent run/player/seed/mode matching, bounded
 save metadata, saved death/continuation policy, spawn policy, death/rejoin
@@ -145,7 +166,7 @@ and testing instructions (Python 3; no third-party dependencies):
 python3 scripts/package-preview.py
 ```
 
-Output: `bin/Release/WKMultiMod-1.8.3.5-preview.zip` and a SHA-256 checksum file.
+Output: `bin/Release/WKMultiMod-1.8.3.6-preview.zip` and a SHA-256 checksum file.
 Both players should extract the ZIP's `MP` folder into `BepInEx/plugins/`,
 replacing the existing `MP` files while the game is closed. Keep backups outside
 `BepInEx/plugins/` so the old DLLs are not loaded alongside the preview.
@@ -180,3 +201,11 @@ Use backups and a disposable run on both computers:
     Confirm `[MP Checkpoint] Loading host level ...` and `Joined at ...` appear.
     Invalid snapshot/timeout tests must refuse admission instead of showing
     apparently close players in different rooms.
+12. Collect both logs BEFORE using `tpto`: manual teleport is not proof of
+    automatic checkpoint placement. In a fresh join, expect `Requesting LateJoin`,
+    `Host response: decision=HostWithOwnItems`, `Loading host level ...`, then
+    `checkpoint resolution=Applied`. For a normal spawn, inspect the logged reason
+    instead of assuming terrain/serialization failed.
+13. Restart/replace a host run inside the same Steam lobby with the same seed.
+    Old-world syncing must stop; reconnect must not reuse the previous run's
+    loaded world, branch checkpoint or death tombstone.
